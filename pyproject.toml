@@ -1,0 +1,32 @@
+[project]
+name = "discord-assistant"
+version = "0.1.0"
+description = "A staged, budget-aware Discord assistant"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "aiosqlite>=0.20,<1",
+    "alembic>=1.16,<2",
+    "discord-py>=2.6,<3",
+    "pydantic-settings>=2.7,<3",
+    "sqlalchemy[asyncio]>=2.0,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=1.0,<2",
+    "ruff>=0.9,<1",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
