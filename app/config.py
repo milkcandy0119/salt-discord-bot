@@ -25,11 +25,32 @@ class Settings(BaseSettings):
     discord_bot_token: SecretStr | None = None
     discord_allowed_guild_ids: str = ""
     discord_allowed_channel_ids: str = ""
+    discord_companion_channel_ids: str = ""
     discord_owner_user_id: str = ""
     discord_admin_user_ids: str = ""
+    discord_ai_command_prefix: str = "!ai"
     database_url: str = "sqlite+aiosqlite:///data/discord_assistant.db"
     conversation_implicit_continuation_minutes: int = Field(default=5, ge=1, le=30)
+    companion_observation_seconds: int = Field(default=5, ge=1, le=60)
+    companion_cooldown_seconds: int = Field(default=120, ge=0, le=3600)
+    companion_activity_window_seconds: int = Field(default=60, ge=10, le=600)
+    companion_recent_bot_minutes: int = Field(default=10, ge=1, le=60)
     openai_api_key: SecretStr | None = None
+    ai_persona_path: str = "personas/salt-zh-tw-v1.toml"
+    ai_chat_model: str = "gpt-5.6-luna"
+    ai_chat_price_version: str = "openai-2026-08-03"
+    ai_chat_input_microusd_per_million_tokens: int = Field(
+        default=1_000_000,
+        ge=0,
+    )
+    ai_chat_output_microusd_per_million_tokens: int = Field(
+        default=6_000_000,
+        ge=0,
+    )
+    ai_chat_max_context_characters: int = Field(default=12_000, ge=1_000, le=100_000)
+    ai_chat_max_output_tokens: int = Field(default=800, ge=1, le=16_000)
+    ai_chat_reasoning_effort: Literal["none", "low", "medium"] = "low"
+    ai_maintenance_message: str = "目前 AI 回覆暫時無法使用，請稍後再試。"
 
     @field_validator("discord_bot_token", "openai_api_key", mode="before")
     @classmethod
@@ -46,6 +67,22 @@ class Settings(BaseSettings):
         """接受不區分大小寫的標準日誌層級。"""
 
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator(
+        "discord_ai_command_prefix",
+        "ai_persona_path",
+        "ai_chat_model",
+        "ai_chat_price_version",
+        "ai_maintenance_message",
+        mode="before",
+    )
+    @classmethod
+    def required_text_is_not_blank(cls, value: object) -> object:
+        """拒絕會使觸發、安全回覆或價格紀錄失去意義的空白文字。"""
+
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        raise ValueError("AI 文字設定不得為空白")
 
     @property
     def missing_discord_settings(self) -> tuple[str, ...]:
@@ -91,6 +128,19 @@ class Settings(BaseSettings):
             self.discord_allowed_channel_ids,
             "DISCORD_ALLOWED_CHANNEL_IDS",
         )
+
+    @property
+    def companion_channel_ids(self) -> frozenset[int]:
+        """傳回陪伴模式頻道，並要求它們同時位於保存白名單。"""
+
+        companion_ids = self._parse_discord_ids(
+            self.discord_companion_channel_ids,
+            "DISCORD_COMPANION_CHANNEL_IDS",
+        )
+        unknown_ids = companion_ids - self.allowed_channel_ids
+        if unknown_ids:
+            raise ValueError("DISCORD_COMPANION_CHANNEL_IDS 必須是允許頻道的子集合")
+        return companion_ids
 
     @property
     def owner_user_id(self) -> int:

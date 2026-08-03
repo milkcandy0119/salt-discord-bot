@@ -66,6 +66,7 @@ def make_incoming_message(**overrides: object) -> IncomingMessage:
         replied_to_message_id=cast(str | None, values["replied_to_message_id"]),
         author_is_bot=cast(bool, values["author_is_bot"]),
         is_own_message=cast(bool, values["is_own_message"]),
+        sticker_names=cast(tuple[str, ...], values.get("sticker_names", ())),
     )
 
 
@@ -206,3 +207,37 @@ async def test_new_message_is_segmented_once_after_it_is_saved(
     await handler.handle(message)
 
     assert segmenter.assigned_message_ids == ["100"]
+
+
+@pytest.mark.asyncio
+async def test_sticker_names_are_saved_as_metadata_without_image_download(
+    message_repository: MessageRepository,
+) -> None:
+    handler = make_handler(message_repository, FakeNotifier())
+
+    outcome = await handler.handle(
+        make_incoming_message(
+            content="這張很有趣？",
+            sticker_names=("青蛙 劇場", "青蛙 劇場"),
+        )
+    )
+    stored = await message_repository.get_by_discord_id("100")
+
+    assert outcome.status == "stored"
+    assert stored is not None
+    assert stored.content == "這張很有趣？\n[Discord 貼圖名稱：青蛙 劇場]"
+
+
+@pytest.mark.asyncio
+async def test_sticker_only_message_is_saved_without_inventing_text(
+    message_repository: MessageRepository,
+) -> None:
+    handler = make_handler(message_repository, FakeNotifier())
+
+    await handler.handle(
+        make_incoming_message(content="", sticker_names=("肉桂捲",))
+    )
+    stored = await message_repository.get_by_discord_id("100")
+
+    assert stored is not None
+    assert stored.content == "[Discord 貼圖名稱：肉桂捲]"

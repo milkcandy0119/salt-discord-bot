@@ -102,6 +102,31 @@ class MessageRepository:
         async with self._session_factory() as session:
             return int(await session.scalar(select(func.count()).select_from(MessageRecord)) or 0)
 
+    async def list_recent_in_channel(
+        self,
+        channel_id: str,
+        *,
+        since: datetime,
+        limit: int = 200,
+    ) -> tuple[MessageRecord, ...]:
+        """依時間讀取頻道近期訊息，供免費陪伴判斷使用。"""
+
+        if limit <= 0:
+            raise ValueError("近期訊息查詢上限必須大於零")
+        async with self._session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(MessageRecord)
+                    .where(
+                        MessageRecord.channel_id == channel_id,
+                        MessageRecord.discord_created_at >= since,
+                    )
+                    .order_by(MessageRecord.discord_created_at.desc(), MessageRecord.id.desc())
+                    .limit(limit)
+                )
+            ).all()
+            return tuple(rows)
+
     async def update_notification_statuses(
         self,
         discord_message_id: str,

@@ -8,6 +8,7 @@ dependencies = [
     "aiosqlite>=0.20,<1",
     "alembic>=1.16,<2",
     "discord-py>=2.6,<3",
+    "openai>=2,<3",
     "pydantic-settings>=2.7,<3",
     "sqlalchemy[asyncio]>=2.0,<3",
 ]

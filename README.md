@@ -1,8 +1,8 @@
 # Discord Assistant
 
-這是一個分階段建立、可長期執行的 Discord 助手。目前完成「階段 3：一次性預算帳本與
-付費呼叫閘門」。Discord 訊息接收、安全持久化、免費切段及交易式預算控制已可運作；真實
-AI 回覆、摘要、向量、提醒及部署尚未啟用。
+這是一個分階段建立、可長期執行的 Discord 助手。目前完成「階段 4.1：陪伴回覆收尾」。
+Discord 訊息接收、安全持久化、免費切段、交易式預算控制、normal／companion 頻道模式、
+受控 AI 回覆及貼圖名稱中繼資料已可運作；摘要、向量、提醒及部署尚未啟用。
 
 ## 需求
 
@@ -28,10 +28,15 @@ uv run python -m app.main
 DISCORD_BOT_TOKEN=
 DISCORD_ALLOWED_GUILD_IDS=123456789
 DISCORD_ALLOWED_CHANNEL_IDS=234567890,345678901
+DISCORD_COMPANION_CHANNEL_IDS=345678901
 DISCORD_OWNER_USER_ID=456789012
 DISCORD_ADMIN_USER_IDS=567890123,678901234
+DISCORD_AI_COMMAND_PREFIX=!ai
 DATABASE_URL=sqlite+aiosqlite:///data/discord_assistant.db
 CONVERSATION_IMPLICIT_CONTINUATION_MINUTES=5
+COMPANION_OBSERVATION_SECONDS=5
+COMPANION_COOLDOWN_SECONDS=120
+OPENAI_API_KEY=
 ```
 
 ID 清單以逗號分隔。`DISCORD_ADMIN_USER_IDS` 可以留空；擁有者仍會收到敏感事件通知。
@@ -69,7 +74,32 @@ uv run python -m app.main
 - 實際花費達 70%／90% 時各私訊擁有者一次。
 - 不會自動補額、按月重置或提供手動重置。
 
-目前沒有任何真實 AI 服務接入，因此帳本初始值全部是零，也不會自行產生費用。
+階段 4 已接入真實 AI 服務，但只有設定 `OPENAI_API_KEY` 且訊息通過觸發與安全規則時才可能
+產生費用；自動化測試全部使用假 client。
+
+## 頻道模式與 AI 回覆
+
+- `normal`：只在提及機器人、回覆機器人或使用 `!ai` 指令時回覆。
+- `companion`：不要求提及，但會先用免費規則評估對話、參與者、訊息速度、冷卻與預算，
+  不會對每則訊息直接呼叫 AI。
+- 陪伴模式的非明確觸發會等待頻道安靜 5 秒；有新訊息便重新計時。提及、回覆機器人及指令
+  不需要等待。
+- 陪伴模式在多位真人密集交談時不插話；預設只回應問題／求助，或延續機器人最近參與的
+  對話，自動回覆成功後冷卻 120 秒。
+- 第一版只在有人發言後判斷是否回覆，不會在無人發言時主動開啟話題，也不使用付費模型
+  判斷「該不該回覆」。
+- 頻道以 Discord channel ID 設定；人設獨立且有版本，只能影響表達方式，不能覆蓋安全、
+  權限、隱私與預算限制。
+- Discord 貼圖只保存名稱作為文字中繼資料，不下載或分析圖片；單獨貼圖不會觸發 AI。
+- 模型輸出會移除重複的 Salt／ソルト說話者前綴，避免和 Discord 顯示名稱重複；人設允許
+  偶爾使用一次簡短動作描寫，但不得讓每則訊息都變成角色扮演小說。
+
+AI 使用官方 OpenAI Responses API，預設聊天模型為 `gpt-5.6-luna`、低推理強度、最多
+12,000 字元上下文與 800 個輸出 Token。上下文先放明確回覆鏈，再補目前段落的近期訊息；
+本階段不讀取歷史向量。人設預設載入 `personas/salt-zh-tw-v1.toml`。
+
+沒有 `OPENAI_API_KEY` 或額度不足時，每次明確觸發只會回覆固定維護訊息。設定金鑰後，通過
+觸發、安全檢查及預算預留的訊息會產生真實付費 API 呼叫。
 
 可用以下唯讀 SQL 查看實際資料庫狀態：
 
@@ -113,5 +143,5 @@ uv run alembic upgrade head
 - `docs/architecture.md`：訊息流程、模組邊界、資料模型與限制。
 - `docs/decisions.md`：已確認的保守試跑政策及後續待確認項目。
 
-下一步是階段 4「AI 觸發、上下文與回覆」。進入前必須先確認觸發條件、聊天模型、價格表、
-系統提示、維護訊息與最大上下文。
+下一步是階段 5「背景摘要與向量檢索」。進入前必須先確認摘要模型、Embedding 模型、向量
+儲存方案與歷史檢索數量。

@@ -27,6 +27,26 @@ class IncomingMessage:
     replied_to_message_id: str | None
     author_is_bot: bool
     is_own_message: bool
+    sticker_names: tuple[str, ...] = ()
+
+
+def compose_stored_content(content: str, sticker_names: tuple[str, ...]) -> str:
+    """將貼圖名稱加入保存內容，但不把名稱當成使用者文字觸發訊號。"""
+
+    normalized_names: list[str] = []
+    for name in sticker_names:
+        normalized = " ".join(name.split())[:100]
+        if normalized and normalized not in normalized_names:
+            normalized_names.append(normalized)
+    if not normalized_names:
+        return content
+
+    sticker_lines = "\n".join(
+        f"[Discord 貼圖名稱：{name}]" for name in normalized_names
+    )
+    if content.strip():
+        return f"{content}\n{sticker_lines}"
+    return sticker_lines
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +113,8 @@ class MessageHandler:
         if message.is_own_message:
             return HandlingOutcome("ignored_own_message")
 
-        content_scan = self._sensitive_filter.scan(message.content)
+        stored_content = compose_stored_content(message.content, message.sticker_names)
+        content_scan = self._sensitive_filter.scan(stored_content)
         display_name_scan = self._sensitive_filter.scan(message.author_display_name or "")
         categories = tuple(
             dict.fromkeys((*content_scan.categories, *display_name_scan.categories))

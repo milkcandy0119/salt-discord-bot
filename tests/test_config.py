@@ -1,3 +1,4 @@
+import pytest
 from pydantic import SecretStr
 
 from app.config import Settings
@@ -8,6 +9,10 @@ def test_defaults_are_safe_without_credentials() -> None:
 
     assert settings.app_env == "development"
     assert settings.openai_api_key is None
+    assert settings.companion_channel_ids == frozenset()
+    assert settings.companion_observation_seconds == 5
+    assert settings.companion_cooldown_seconds == 120
+    assert settings.ai_chat_model == "gpt-5.6-luna"
     assert settings.missing_discord_settings == (
         "DISCORD_BOT_TOKEN",
         "DISCORD_ALLOWED_GUILD_IDS",
@@ -48,3 +53,21 @@ def test_discord_id_lists_are_parsed_without_duplicates() -> None:
     assert settings.allowed_guild_ids == frozenset({1, 2})
     assert settings.allowed_channel_ids == frozenset({3, 4})
     assert settings.sensitive_notification_user_ids == frozenset({5, 6, 7})
+
+
+def test_companion_channels_must_be_allowed_by_channel_id() -> None:
+    settings = Settings(
+        _env_file=None,
+        discord_allowed_channel_ids="3,4",
+        discord_companion_channel_ids="4",
+    )
+
+    assert settings.companion_channel_ids == frozenset({4})
+
+    invalid = Settings(
+        _env_file=None,
+        discord_allowed_channel_ids="3,4",
+        discord_companion_channel_ids="5",
+    )
+    with pytest.raises(ValueError, match="子集合"):
+        _ = invalid.companion_channel_ids
