@@ -144,6 +144,14 @@ class ConversationSegmenter:
     async def archive_inactive(self, as_of: datetime | None = None) -> int:
         """封存滿 30 分鐘沒有新訊息的活動段落。"""
 
+        return len(await self.archive_inactive_segment_ids(as_of))
+
+    async def archive_inactive_segment_ids(
+        self,
+        as_of: datetime | None = None,
+    ) -> tuple[int, ...]:
+        """封存逾時段落並傳回這次實際封存的 ID。"""
+
         effective_time = _as_utc(as_of or datetime.now(UTC))
         async with self._session_factory() as session:
             archived = await self._archive_inactive_in_session(session, effective_time)
@@ -154,17 +162,21 @@ class ConversationSegmenter:
         self,
         session: AsyncSession,
         as_of: datetime,
-    ) -> int:
+    ) -> tuple[int, ...]:
         cutoff = as_of - self._archive_after
-        result = await session.execute(
-            update(ConversationSegmentRecord)
-            .where(
-                ConversationSegmentRecord.status == "active",
-                ConversationSegmentRecord.last_message_at <= cutoff,
-            )
-            .values(status="archived", archived_at=as_of)
+        return tuple(
+            (
+                await session.scalars(
+                    update(ConversationSegmentRecord)
+                    .where(
+                        ConversationSegmentRecord.status == "active",
+                        ConversationSegmentRecord.last_message_at <= cutoff,
+                    )
+                    .values(status="archived", archived_at=as_of)
+                    .returning(ConversationSegmentRecord.id)
+                )
+            ).all()
         )
-        return result.rowcount
 
     async def assign_pending_messages(self) -> int:
         """在啟動時補處理已保存但尚未切段的訊息。"""

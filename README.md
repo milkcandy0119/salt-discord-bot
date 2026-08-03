@@ -1,8 +1,9 @@
 # Discord Assistant
 
-這是一個分階段建立、可長期執行的 Discord 助手。目前完成「階段 4.1：陪伴回覆收尾」。
+這是一個分階段建立、可長期執行的 Discord 助手。目前完成「階段 5：背景摘要與向量檢索」。
 Discord 訊息接收、安全持久化、免費切段、交易式預算控制、normal／companion 頻道模式、
-受控 AI 回覆及貼圖名稱中繼資料已可運作；摘要、向量、提醒及部署尚未啟用。
+受控 AI 回覆、貼圖名稱中繼資料，以及可選的背景摘要與同頻道歷史檢索已可運作；歷史匯入、
+提醒及部署尚未啟用。
 
 ## 需求
 
@@ -37,6 +38,7 @@ CONVERSATION_IMPLICIT_CONTINUATION_MINUTES=5
 COMPANION_OBSERVATION_SECONDS=5
 COMPANION_COOLDOWN_SECONDS=120
 OPENAI_API_KEY=
+BACKGROUND_AI_ENABLED=false
 ```
 
 ID 清單以逗號分隔。`DISCORD_ADMIN_USER_IDS` 可以留空；擁有者仍會收到敏感事件通知。
@@ -95,11 +97,59 @@ uv run python -m app.main
   偶爾使用一次簡短動作描寫，但不得讓每則訊息都變成角色扮演小說。
 
 AI 使用官方 OpenAI Responses API，預設聊天模型為 `gpt-5.6-luna`、低推理強度、最多
-12,000 字元上下文與 800 個輸出 Token。上下文先放明確回覆鏈，再補目前段落的近期訊息；
-本階段不讀取歷史向量。人設預設載入 `personas/salt-zh-tw-v1.toml`。
+12,000 字元上下文與 800 個輸出 Token。上下文先放明確回覆鏈，再暫時補入同頻道最近 5 分鐘
+內，發言者本人及最多三位被提及成員的近期訊息，最後補目前段落的其他近期內容。每位近期
+參與者最多 4 則、跨段落補充合計最多 2,000 字元，且不永久合併段落。若背景記憶已明確
+啟用且同頻道已有向量，才會在確定要回覆後建立一次查詢 Embedding，暫時補入最多 3 筆歷史
+摘要。人設預設載入 `personas/salt-zh-tw-v1.toml`。
 
 沒有 `OPENAI_API_KEY` 或額度不足時，每次明確觸發只會回覆固定維護訊息。設定金鑰後，通過
 觸發、安全檢查及預算預留的訊息會產生真實付費 API 呼叫。
+
+## 階段 5 背景記憶
+
+階段 5 採保守方案 A，預設 `BACKGROUND_AI_ENABLED=false`。保持關閉時，不啟動摘要排程、不建立
+新背景工作、不做聊天查詢 Embedding，也不產生階段 5 費用。改為 `true` 後：
+
+- 每分鐘封存檢查只替「這次新封存」的段落建立工作，不回填啟用前已封存的舊段落。
+- 背景工作預設每 5 分鐘執行；pending 數達 20 時可提前跑一批，每批最多 10 筆。
+- 工作持久化於 SQLite，最舊優先、冪等；程序中斷後可回收逾時 claim。
+- 可安全重試的錯誤採 1、2、4、8…分鐘退避，上限 1 小時，預設 5 次後隔離。
+- 額度不足或沒有金鑰時保留 pending，且不呼叫付費 API；用量不明時隔離工作，避免自動重送
+  造成重複計費。
+- 摘要使用 `gpt-5.4-nano-2026-03-17`、`reasoning=none`、最多 300 輸出 Token。
+- Embedding 使用 `text-embedding-3-small` 的完整 1536 維，向量保存為 SQLite BLOB；小型資料量
+  由 Python 精確計算餘弦相似度，不需要外部向量服務。
+- 摘要與向量都是可從原始訊息重建的衍生資料，不會永久合併對話段落。
+
+可用以下唯讀 SQL 檢查背景狀態：
+
+```sql
+SELECT status, COUNT(*) FROM background_jobs GROUP BY status;
+
+SELECT id, segment_id, source_message_count, model_name, prompt_version, created_at
+FROM segment_summaries ORDER BY id DESC LIMIT 20;
+
+SELECT summary_id, chunk_index, model_name, dimension, length(vector_blob) AS bytes
+FROM summary_embeddings ORDER BY id DESC LIMIT 20;
+```
+
+## 階段 6 免費歷史分析
+
+正式匯入前必須先執行唯讀分析。分析工具會登入 Discord 並讀取白名單頻道歷史，但不傳送或
+修改 Discord 訊息、不寫入資料庫、不建立背景工作，也不呼叫 OpenAI：
+
+```powershell
+uv run python -m app.history_cli analyze --limit-per-channel 10000
+```
+
+可用 `--after 2026-01-01T00:00:00+08:00` 限定起始時間。報告只輸出數量、文字容量、附件中繼
+資料、切段估算、版本化模型價格與預算餘額，不輸出訊息內容或作者名稱。若某頻道達到上限，
+其 ID 會出現在 `truncated_channel_ids`；此時不得把報告視為完整歷史估算。
+
+`estimated_total_cost_microusd` 使用免費切段模擬，`maximum_total_cost_microusd` 則保守假設每則
+合格新訊息各自形成一段。兩者都包含資料庫中已封存但尚未摘要的段落。分析結果不是正式匯入
+授權；保存新歷史訊息、排摘要工作及向量化仍須再次明確確認。
 
 可用以下唯讀 SQL 查看實際資料庫狀態：
 
@@ -143,5 +193,5 @@ uv run alembic upgrade head
 - `docs/architecture.md`：訊息流程、模組邊界、資料模型與限制。
 - `docs/decisions.md`：已確認的保守試跑政策及後續待確認項目。
 
-下一步是階段 5「背景摘要與向量檢索」。進入前必須先確認摘要模型、Embedding 模型、向量
-儲存方案與歷史檢索數量。
+階段 6 的免費分析工具已完成；正式匯入仍需先顯示最新估算並取得明確確認。後續階段 7 是
+持久化提醒、時區與管理查詢功能。

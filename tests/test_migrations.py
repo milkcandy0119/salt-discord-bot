@@ -52,4 +52,49 @@ def test_phase_one_database_upgrade_preserves_existing_messages(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert message == ("階段 1 既有訊息", None)
-    assert revision == ("20260803_0003",)
+    assert revision == ("20260804_0004",)
+
+
+def test_phase_five_migration_does_not_queue_existing_archived_segments(
+    temporary_test_directory: Path,
+) -> None:
+    """升級只建立結構，不得把舊封存內容送入付費佇列。"""
+
+    database_path = temporary_test_directory / "phase-five-upgrade.sqlite3"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    upgrade_database(database_url, revision="20260803_0003")
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute(
+            """
+            INSERT INTO conversation_segments (
+                id, guild_id, channel_id, root_message_id, status,
+                created_at, last_message_at, archived_at, reopened_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "1",
+                "2",
+                "old-root",
+                "archived",
+                "2026-08-01 12:00:00",
+                "2026-08-01 12:01:00",
+                "2026-08-01 12:31:00",
+                None,
+            ),
+        )
+        connection.commit()
+
+    upgrade_database(database_url)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        job_count = connection.execute("SELECT COUNT(*) FROM background_jobs").fetchone()
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+
+    assert job_count == (0,)
+    assert {"background_jobs", "segment_summaries", "summary_embeddings"} <= tables

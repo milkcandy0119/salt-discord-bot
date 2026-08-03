@@ -13,6 +13,17 @@ def test_defaults_are_safe_without_credentials() -> None:
     assert settings.companion_observation_seconds == 5
     assert settings.companion_cooldown_seconds == 120
     assert settings.ai_chat_model == "gpt-5.6-luna"
+    assert settings.ai_recent_participant_context_minutes == 5
+    assert settings.ai_recent_messages_per_participant == 4
+    assert settings.ai_recent_participant_context_characters == 2_000
+    assert settings.ai_max_mentioned_participants == 3
+    assert settings.background_ai_enabled is False
+    assert settings.ai_summary_model == "gpt-5.4-nano-2026-03-17"
+    assert settings.ai_summary_max_output_tokens == 300
+    assert settings.ai_embedding_model == "text-embedding-3-small"
+    assert settings.ai_embedding_dimensions == 1_536
+    assert settings.ai_history_result_limit == 3
+    assert settings.background_job_interval_minutes == 5
     assert settings.missing_discord_settings == (
         "DISCORD_BOT_TOKEN",
         "DISCORD_ALLOWED_GUILD_IDS",

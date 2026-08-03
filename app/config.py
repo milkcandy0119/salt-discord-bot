@@ -48,9 +48,38 @@ class Settings(BaseSettings):
         ge=0,
     )
     ai_chat_max_context_characters: int = Field(default=12_000, ge=1_000, le=100_000)
+    ai_recent_participant_context_minutes: int = Field(default=5, ge=1, le=30)
+    ai_recent_messages_per_participant: int = Field(default=4, ge=1, le=20)
+    ai_recent_participant_context_characters: int = Field(
+        default=2_000,
+        ge=0,
+        le=20_000,
+    )
+    ai_max_mentioned_participants: int = Field(default=3, ge=0, le=10)
     ai_chat_max_output_tokens: int = Field(default=800, ge=1, le=16_000)
     ai_chat_reasoning_effort: Literal["none", "low", "medium"] = "low"
     ai_maintenance_message: str = "目前 AI 回覆暫時無法使用，請稍後再試。"
+    background_ai_enabled: bool = False
+    ai_summary_model: str = "gpt-5.4-nano-2026-03-17"
+    ai_summary_price_version: str = "openai-2026-08-04"
+    ai_summary_input_microusd_per_million_tokens: int = Field(default=200_000, ge=0)
+    ai_summary_output_microusd_per_million_tokens: int = Field(default=1_250_000, ge=0)
+    ai_summary_max_output_tokens: int = Field(default=300, ge=1, le=2_000)
+    ai_embedding_model: str = "text-embedding-3-small"
+    ai_embedding_price_version: str = "openai-2026-08-04"
+    ai_embedding_input_microusd_per_million_tokens: int = Field(default=20_000, ge=0)
+    ai_embedding_dimensions: int = Field(default=1_536, ge=1, le=3_072)
+    ai_embedding_chunk_characters: int = Field(default=2_000, ge=100, le=20_000)
+    ai_embedding_chunk_overlap_characters: int = Field(default=200, ge=0, le=5_000)
+    ai_history_result_limit: int = Field(default=3, ge=0, le=20)
+    ai_history_context_characters: int = Field(default=3_000, ge=0, le=20_000)
+    background_job_interval_minutes: int = Field(default=5, ge=1, le=60)
+    background_job_high_water_mark: int = Field(default=20, ge=1, le=10_000)
+    background_job_max_per_run: int = Field(default=10, ge=1, le=1_000)
+    background_job_max_attempts: int = Field(default=5, ge=1, le=20)
+    background_job_retry_base_seconds: int = Field(default=60, ge=1, le=3_600)
+    background_job_budget_retry_minutes: int = Field(default=5, ge=1, le=1_440)
+    background_job_stale_minutes: int = Field(default=5, ge=1, le=60)
 
     @field_validator("discord_bot_token", "openai_api_key", mode="before")
     @classmethod
@@ -74,6 +103,10 @@ class Settings(BaseSettings):
         "ai_chat_model",
         "ai_chat_price_version",
         "ai_maintenance_message",
+        "ai_summary_model",
+        "ai_summary_price_version",
+        "ai_embedding_model",
+        "ai_embedding_price_version",
         mode="before",
     )
     @classmethod

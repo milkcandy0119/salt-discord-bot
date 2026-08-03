@@ -20,9 +20,12 @@ from app.bot.companion_scheduler import CompanionScheduler
 from app.bot.message_handler import IncomingMessage, MessageHandler, SensitiveNotice
 from app.config import Settings
 from app.conversations.context_builder import ContextBuilder
+from app.conversations.history_retriever import HistoricalContextRetriever
 from app.conversations.segmenter import ConversationSegmenter
 from app.security.sensitive_filter import SensitiveFilter
+from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.repositories import MessageRepository, NewMessage
+from app.workers.background_worker import BackgroundWorker
 
 LOGGER = logging.getLogger(__name__)
 
@@ -106,6 +109,9 @@ class DiscordAssistantClient(discord.Client):
         budget_manager: BudgetManager,
         context_builder: ContextBuilder,
         chat_service: ChatService,
+        background_repository: BackgroundMemoryRepository | None = None,
+        background_worker: BackgroundWorker | None = None,
+        history_retriever: HistoricalContextRetriever | None = None,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -118,6 +124,9 @@ class DiscordAssistantClient(discord.Client):
         self._budget_manager = budget_manager
         self._context_builder = context_builder
         self._chat_service = chat_service
+        self._background_repository = background_repository
+        self._background_worker = background_worker
+        self._history_retriever = history_retriever
         self._budget_notifier = DiscordBudgetThresholdNotifier(self, settings.owner_user_id)
         self._mode_resolver = ChannelModeResolver(
             allowed_channel_ids=settings.allowed_channel_ids,
@@ -147,6 +156,11 @@ class DiscordAssistantClient(discord.Client):
             LOGGER.info("已補處理未切段訊息 count=%s", recovered)
         self.archive_inactive_segments.start()
         self.dispatch_budget_notifications.start()
+        if self._settings.background_ai_enabled and self._background_worker is not None:
+            self.process_background_jobs.change_interval(
+                minutes=self._settings.background_job_interval_minutes
+            )
+            self.process_background_jobs.start()
 
     async def close(self) -> None:
         """停止定期封存工作並關閉 Discord 連線。"""
@@ -156,6 +170,8 @@ class DiscordAssistantClient(discord.Client):
             self.archive_inactive_segments.cancel()
         if self.dispatch_budget_notifications.is_running():
             self.dispatch_budget_notifications.cancel()
+        if self.process_background_jobs.is_running():
+            self.process_background_jobs.cancel()
         await super().close()
 
     @tasks.loop(minutes=1)
@@ -163,9 +179,50 @@ class DiscordAssistantClient(discord.Client):
         """每分鐘封存滿 30 分鐘沒有新訊息的段落。"""
 
         try:
-            await self._segmenter.archive_inactive()
+            archived_ids = await self._segmenter.archive_inactive_segment_ids()
+            if (
+                archived_ids
+                and self._settings.background_ai_enabled
+                and self._background_repository is not None
+            ):
+                created = await self._background_repository.enqueue_archived_segments(
+                    archived_ids,
+                    max_attempts=self._settings.background_job_max_attempts,
+                )
+                if created:
+                    LOGGER.info("已排入新封存段落摘要工作 count=%s", created)
+                if (
+                    self._background_worker is not None
+                    and await self._background_repository.pending_count()
+                    >= self._settings.background_job_high_water_mark
+                ):
+                    await self._run_background_jobs()
         except Exception as error:
             LOGGER.error("段落封存檢查失敗 error_type=%s", type(error).__name__)
+
+    @tasks.loop(minutes=5)
+    async def process_background_jobs(self) -> None:
+        """依設定間隔執行一批持久化摘要與向量工作。"""
+
+        await self._run_background_jobs()
+
+    async def _run_background_jobs(self) -> None:
+        """執行背景工作並只記錄不含訊息內容的結果。"""
+
+        if self._background_worker is None:
+            return
+        try:
+            result = await self._background_worker.run_once()
+            if any((result.completed, result.deferred, result.retried, result.failed)):
+                LOGGER.info(
+                    "背景工作批次完成 completed=%s deferred=%s retried=%s failed=%s",
+                    result.completed,
+                    result.deferred,
+                    result.retried,
+                    result.failed,
+                )
+        except Exception as error:
+            LOGGER.error("背景工作批次失敗 error_type=%s", type(error).__name__)
 
     @tasks.loop(minutes=1)
     async def dispatch_budget_notifications(self) -> None:
@@ -338,6 +395,16 @@ class DiscordAssistantClient(discord.Client):
             incoming.discord_message_id,
             assistant_author_id=str(self.user.id),
         )
+        if self._settings.background_ai_enabled and self._history_retriever is not None:
+            summaries = await self._history_retriever.retrieve(
+                trigger_message_id=incoming.discord_message_id,
+                query_text=incoming.content,
+            )
+            context = self._context_builder.add_historical_summaries(
+                context,
+                summaries,
+                maximum_characters=self._settings.ai_history_context_characters,
+            )
         outcome = await self._chat_service.generate(context)
         outgoing_content = self._fit_discord_message(outcome.content)
         try:

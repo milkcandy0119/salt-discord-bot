@@ -8,15 +8,21 @@ from datetime import timedelta
 
 from app.ai.budget_manager import BudgetManager, ModelPrice
 from app.ai.chat_service import ChatService, OpenAIResponsesProvider
+from app.ai.embedding_service import EmbeddingService, OpenAIEmbeddingProvider
 from app.ai.persona import load_persona
+from app.ai.summary_service import OpenAISummaryProvider, SummaryService
 from app.bot.client import DiscordAssistantClient
 from app.config import Settings, get_settings
 from app.conversations.context_builder import ContextBuilder
+from app.conversations.history_retriever import HistoricalContextRetriever
 from app.conversations.segmenter import ConversationSegmenter
 from app.logging_config import configure_logging
 from app.security.sensitive_filter import SensitiveFilter
+from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.database import Database, upgrade_database
 from app.storage.repositories import MessageRepository
+from app.storage.vector_store import SQLiteVectorStore
+from app.workers.background_worker import BackgroundWorker
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +61,7 @@ async def run_discord(settings: Settings) -> int:
     await asyncio.to_thread(upgrade_database, settings.database_url)
     database = Database(settings.database_url)
     repository = MessageRepository(database.session_factory)
+    background_repository = BackgroundMemoryRepository(database.session_factory)
     budget_manager = BudgetManager(database.session_factory)
     persona = load_persona(settings.ai_persona_path)
     provider = (
@@ -84,6 +91,16 @@ async def run_discord(settings: Settings) -> int:
     context_builder = ContextBuilder(
         database.session_factory,
         maximum_characters=settings.ai_chat_max_context_characters,
+        recent_participant_window=timedelta(
+            minutes=settings.ai_recent_participant_context_minutes
+        ),
+        recent_messages_per_participant=(
+            settings.ai_recent_messages_per_participant
+        ),
+        maximum_recent_participant_characters=(
+            settings.ai_recent_participant_context_characters
+        ),
+        maximum_mentioned_participants=settings.ai_max_mentioned_participants,
     )
     segmenter = ConversationSegmenter(
         database.session_factory,
@@ -91,6 +108,84 @@ async def run_discord(settings: Settings) -> int:
             minutes=settings.conversation_implicit_continuation_minutes
         ),
     )
+    background_worker = None
+    history_retriever = None
+    if settings.background_ai_enabled:
+        background_provider_key = (
+            settings.openai_api_key.get_secret_value()
+            if settings.openai_api_key is not None
+            else None
+        )
+        summary_provider = (
+            OpenAISummaryProvider(background_provider_key)
+            if background_provider_key is not None
+            else None
+        )
+        embedding_provider = (
+            OpenAIEmbeddingProvider(background_provider_key)
+            if background_provider_key is not None
+            else None
+        )
+        vector_store = SQLiteVectorStore(database.session_factory)
+        embedding_service = EmbeddingService(
+            provider=embedding_provider,
+            repository=background_repository,
+            vector_store=vector_store,
+            budget_manager=budget_manager,
+            price=ModelPrice(
+                model_name=settings.ai_embedding_model,
+                price_version=settings.ai_embedding_price_version,
+                input_microusd_per_million_tokens=(
+                    settings.ai_embedding_input_microusd_per_million_tokens
+                ),
+                output_microusd_per_million_tokens=0,
+            ),
+            sensitive_filter=SensitiveFilter(),
+            dimensions=settings.ai_embedding_dimensions,
+            chunk_characters=settings.ai_embedding_chunk_characters,
+            chunk_overlap_characters=(
+                settings.ai_embedding_chunk_overlap_characters
+            ),
+        )
+        summary_service = SummaryService(
+            provider=summary_provider,
+            repository=background_repository,
+            budget_manager=budget_manager,
+            price=ModelPrice(
+                model_name=settings.ai_summary_model,
+                price_version=settings.ai_summary_price_version,
+                input_microusd_per_million_tokens=(
+                    settings.ai_summary_input_microusd_per_million_tokens
+                ),
+                output_microusd_per_million_tokens=(
+                    settings.ai_summary_output_microusd_per_million_tokens
+                ),
+            ),
+            sensitive_filter=SensitiveFilter(),
+            maximum_output_tokens=settings.ai_summary_max_output_tokens,
+            max_job_attempts=settings.background_job_max_attempts,
+        )
+        background_worker = BackgroundWorker(
+            repository=background_repository,
+            summary_service=summary_service,
+            embedding_service=embedding_service,
+            stale_after=timedelta(minutes=settings.background_job_stale_minutes),
+            retry_base_delay=timedelta(
+                seconds=settings.background_job_retry_base_seconds
+            ),
+            budget_retry_after=timedelta(
+                minutes=settings.background_job_budget_retry_minutes
+            ),
+            maximum_jobs_per_run=settings.background_job_max_per_run,
+        )
+        history_retriever = HistoricalContextRetriever(
+            database.session_factory,
+            embedding_service=embedding_service,
+            vector_store=vector_store,
+            model_name=settings.ai_embedding_model,
+            dimensions=settings.ai_embedding_dimensions,
+            result_limit=settings.ai_history_result_limit,
+        )
     client = DiscordAssistantClient(
         settings=settings,
         repository=repository,
@@ -98,6 +193,9 @@ async def run_discord(settings: Settings) -> int:
         budget_manager=budget_manager,
         context_builder=context_builder,
         chat_service=chat_service,
+        background_repository=background_repository,
+        background_worker=background_worker,
+        history_retriever=history_retriever,
     )
     try:
         async with client:
