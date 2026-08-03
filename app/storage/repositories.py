@@ -61,7 +61,9 @@ class MessageRepository:
             "is_bot": message.is_bot,
             "is_sensitive": message.is_sensitive,
             "sensitive_categories": list(message.sensitive_categories),
-            "processing_status": "blocked_sensitive" if message.is_sensitive else "stored",
+            "processing_status": (
+                "blocked_sensitive" if message.is_sensitive else "pending_segmentation"
+            ),
             "author_notification_status": notification_status,
             "admin_notification_status": notification_status,
         }
@@ -119,4 +121,3 @@ class MessageRepository:
                 )
             )
             await session.commit()
-

@@ -1,7 +1,8 @@
 # Discord Assistant
 
-這是一個分階段建立、可長期執行的 Discord 助手。目前完成「階段 1：Discord 訊息接收、
-敏感資料閘門與訊息持久化」。AI、對話切段、預算、摘要、向量、提醒及部署尚未啟用。
+這是一個分階段建立、可長期執行的 Discord 助手。目前完成「階段 2：對話段落引擎」。
+Discord 訊息接收、敏感資料閘門、持久化及免費確定性切段已可運作；AI、預算、摘要、向量、
+提醒及部署尚未啟用。
 
 ## 需求
 
@@ -30,6 +31,7 @@ DISCORD_ALLOWED_CHANNEL_IDS=234567890,345678901
 DISCORD_OWNER_USER_ID=456789012
 DISCORD_ADMIN_USER_IDS=567890123,678901234
 DATABASE_URL=sqlite+aiosqlite:///data/discord_assistant.db
+CONVERSATION_IMPLICIT_CONTINUATION_MINUTES=5
 ```
 
 ID 清單以逗號分隔。`DISCORD_ADMIN_USER_IDS` 可以留空；擁有者仍會收到敏感事件通知。
@@ -45,6 +47,16 @@ uv run python -m app.main
 ```
 
 程式會先自動執行 Alembic migration，再連線 Discord。停止程式可使用 `Ctrl+C`。
+
+## 對話段落
+
+- 明確回覆會加入被回覆訊息的段落，即使該段落已封存。
+- 沒有回覆時，只在同一作者近期只有一個候選活動段落時續接。
+- 無法可靠判斷或同時符合多個段落時建立新段落。
+- 段落滿 30 分鐘沒有新訊息會自動封存。
+- 程式重啟會補處理已保存但尚未完成切段的訊息。
+
+這些規則不讀取訊息語意，也不呼叫任何付費 API。
 
 ## 敏感資料政策
 
@@ -73,4 +85,4 @@ uv run alembic upgrade head
 - `docs/architecture.md`：訊息流程、模組邊界、資料模型與限制。
 - `docs/decisions.md`：已確認的保守試跑政策及後續待確認項目。
 
-下一步是階段 2「對話段落引擎」，但必須取得明確確認後才會開始。
+下一步是階段 3「一次性預算帳本與付費呼叫閘門」，但必須取得明確確認後才會開始。

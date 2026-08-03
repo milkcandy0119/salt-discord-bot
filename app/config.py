@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     discord_owner_user_id: str = ""
     discord_admin_user_ids: str = ""
     database_url: str = "sqlite+aiosqlite:///data/discord_assistant.db"
+    conversation_implicit_continuation_minutes: int = Field(default=5, ge=1, le=30)
     openai_api_key: SecretStr | None = None
 
     @field_validator("discord_bot_token", "openai_api_key", mode="before")

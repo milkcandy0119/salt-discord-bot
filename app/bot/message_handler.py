@@ -48,6 +48,12 @@ class SensitiveNotifier(Protocol):
     async def notify_admins(self, notice: SensitiveNotice) -> None: ...
 
 
+class SegmentAssigner(Protocol):
+    """將已保存訊息交給確定性對話切段引擎的介面。"""
+
+    async def assign_message(self, discord_message_id: str) -> object: ...
+
+
 @dataclass(frozen=True, slots=True)
 class HandlingOutcome:
     """事件處理結果。"""
@@ -64,12 +70,14 @@ class MessageHandler:
         repository: MessageRepository,
         sensitive_filter: SensitiveFilter,
         notifier: SensitiveNotifier,
+        segmenter: SegmentAssigner,
         allowed_guild_ids: frozenset[int],
         allowed_channel_ids: frozenset[int],
     ) -> None:
         self._repository = repository
         self._sensitive_filter = sensitive_filter
         self._notifier = notifier
+        self._segmenter = segmenter
         self._allowed_guild_ids = allowed_guild_ids
         self._allowed_channel_ids = allowed_channel_ids
 
@@ -114,6 +122,7 @@ class MessageHandler:
 
         if not save_result.created:
             return HandlingOutcome("duplicate")
+        await self._assign_segment(message.discord_message_id)
         if not is_sensitive:
             return HandlingOutcome("stored")
 
@@ -132,6 +141,16 @@ class MessageHandler:
             admin_status=admin_status,
         )
         return HandlingOutcome("stored_sensitive")
+
+    async def _assign_segment(self, discord_message_id: str) -> None:
+        try:
+            await self._segmenter.assign_message(discord_message_id)
+        except Exception as error:
+            LOGGER.error(
+                "訊息切段失敗 message_id=%s error_type=%s",
+                discord_message_id,
+                type(error).__name__,
+            )
 
     async def _send_author_notice(self, notice: SensitiveNotice) -> str:
         try:

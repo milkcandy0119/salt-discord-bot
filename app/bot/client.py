@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 
 import discord
+from discord.ext import tasks
 
 from app.bot.message_handler import IncomingMessage, MessageHandler, SensitiveNotice
 from app.config import Settings
+from app.conversations.segmenter import ConversationSegmenter
 from app.security.sensitive_filter import SensitiveFilter
 from app.storage.repositories import MessageRepository
 
@@ -60,19 +62,51 @@ class DiscordSensitiveNotifier:
 class DiscordAssistantClient(discord.Client):
     """將 Discord 事件轉為內部訊息後交給安全處理流程。"""
 
-    def __init__(self, *, settings: Settings, repository: MessageRepository) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        repository: MessageRepository,
+        segmenter: ConversationSegmenter,
+    ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(intents=intents)
 
         notifier = DiscordSensitiveNotifier(self, settings.sensitive_notification_user_ids)
+        self._segmenter = segmenter
         self._message_handler = MessageHandler(
             repository=repository,
             sensitive_filter=SensitiveFilter(),
             notifier=notifier,
+            segmenter=segmenter,
             allowed_guild_ids=settings.allowed_guild_ids,
             allowed_channel_ids=settings.allowed_channel_ids,
         )
+
+    async def setup_hook(self) -> None:
+        """補處理重啟前未切段訊息，並啟動定期封存檢查。"""
+
+        recovered = await self._segmenter.assign_pending_messages()
+        if recovered:
+            LOGGER.info("已補處理未切段訊息 count=%s", recovered)
+        self.archive_inactive_segments.start()
+
+    async def close(self) -> None:
+        """停止定期封存工作並關閉 Discord 連線。"""
+
+        if self.archive_inactive_segments.is_running():
+            self.archive_inactive_segments.cancel()
+        await super().close()
+
+    @tasks.loop(minutes=1)
+    async def archive_inactive_segments(self) -> None:
+        """每分鐘封存滿 30 分鐘沒有新訊息的段落。"""
+
+        try:
+            await self._segmenter.archive_inactive()
+        except Exception as error:
+            LOGGER.error("段落封存檢查失敗 error_type=%s", type(error).__name__)
 
     async def on_ready(self) -> None:
         """記錄連線完成；日誌只包含必要 ID。"""

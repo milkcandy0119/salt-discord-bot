@@ -33,6 +33,14 @@ class FailingNotifier(FakeNotifier):
         raise RuntimeError("模擬管理員通知失敗")
 
 
+@dataclass
+class FakeSegmenter:
+    assigned_message_ids: list[str] = field(default_factory=list)
+
+    async def assign_message(self, discord_message_id: str) -> None:
+        self.assigned_message_ids.append(discord_message_id)
+
+
 def make_incoming_message(**overrides: object) -> IncomingMessage:
     values: dict[str, object] = {
         "discord_message_id": "100",
@@ -61,11 +69,16 @@ def make_incoming_message(**overrides: object) -> IncomingMessage:
     )
 
 
-def make_handler(repository: MessageRepository, notifier: FakeNotifier) -> MessageHandler:
+def make_handler(
+    repository: MessageRepository,
+    notifier: FakeNotifier,
+    segmenter: FakeSegmenter | None = None,
+) -> MessageHandler:
     return MessageHandler(
         repository=repository,
         sensitive_filter=SensitiveFilter(),
         notifier=notifier,
+        segmenter=segmenter or FakeSegmenter(),
         allowed_guild_ids=frozenset({1}),
         allowed_channel_ids=frozenset({2}),
     )
@@ -147,6 +160,7 @@ async def test_notification_failure_does_not_remove_saved_sensitive_message(
         repository=message_repository,
         sensitive_filter=SensitiveFilter(),
         notifier=FailingNotifier(),
+        segmenter=FakeSegmenter(),
         allowed_guild_ids=frozenset({1}),
         allowed_channel_ids=frozenset({2}),
     )
@@ -177,3 +191,18 @@ async def test_sensitive_display_name_is_masked_before_storage(
     assert stored.is_sensitive is True
     assert stored.author_display_name is not None
     assert secret not in stored.author_display_name
+
+
+@pytest.mark.asyncio
+async def test_new_message_is_segmented_once_after_it_is_saved(
+    message_repository: MessageRepository,
+) -> None:
+    notifier = FakeNotifier()
+    segmenter = FakeSegmenter()
+    handler = make_handler(message_repository, notifier, segmenter)
+    message = make_incoming_message()
+
+    await handler.handle(message)
+    await handler.handle(message)
+
+    assert segmenter.assigned_message_ids == ["100"]

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 
 from app.bot.client import DiscordAssistantClient
 from app.config import Settings, get_settings
+from app.conversations.segmenter import ConversationSegmenter
 from app.logging_config import configure_logging
 from app.storage.database import Database, upgrade_database
 from app.storage.repositories import MessageRepository
@@ -46,7 +48,17 @@ async def run_discord(settings: Settings) -> int:
     await asyncio.to_thread(upgrade_database, settings.database_url)
     database = Database(settings.database_url)
     repository = MessageRepository(database.session_factory)
-    client = DiscordAssistantClient(settings=settings, repository=repository)
+    segmenter = ConversationSegmenter(
+        database.session_factory,
+        implicit_continuation_window=timedelta(
+            minutes=settings.conversation_implicit_continuation_minutes
+        ),
+    )
+    client = DiscordAssistantClient(
+        settings=settings,
+        repository=repository,
+        segmenter=segmenter,
+    )
     try:
         async with client:
             token = settings.discord_bot_token
