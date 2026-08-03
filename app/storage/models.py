@@ -59,3 +59,56 @@ class MessageRecord(Base):
         ForeignKey("conversation_segments.id", ondelete="SET NULL"),
         index=True,
     )
+
+
+class BudgetStateRecord(Base):
+    """整個系統唯一的一次性預算彙總狀態。"""
+
+    __tablename__ = "budget_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    global_spent_microusd: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    global_reserved_microusd: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    background_spent_microusd: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    background_reserved_microusd: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PaidAiCallRecord(Base):
+    """付費 AI 呼叫的預留、價格快照、用量及結算紀錄。"""
+
+    __tablename__ = "paid_ai_calls"
+
+    reservation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    budget_scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    price_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_microusd_per_million_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_microusd_per_million_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    maximum_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    maximum_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_cost_microusd: Mapped[int] = mapped_column(Integer, nullable=False)
+    actual_cost_microusd: Mapped[int | None] = mapped_column(Integer)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BudgetThresholdNotificationRecord(Base):
+    """70% 與 90% 預算門檻的一次性通知狀態。"""
+
+    __tablename__ = "budget_threshold_notifications"
+
+    threshold_percent: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_type: Mapped[str | None] = mapped_column(String(128))

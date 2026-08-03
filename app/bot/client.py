@@ -7,6 +7,7 @@ import logging
 import discord
 from discord.ext import tasks
 
+from app.ai.budget_manager import BudgetManager, BudgetSnapshot
 from app.bot.message_handler import IncomingMessage, MessageHandler, SensitiveNotice
 from app.config import Settings
 from app.conversations.segmenter import ConversationSegmenter
@@ -19,6 +20,30 @@ AUTHOR_NOTICE = (
     "你剛才的訊息可能包含敏感資料。系統未將完整內容寫入資料庫或送往外部服務。"
     "請檢查該訊息，必要時刪除並立即撤銷或更換相關憑證。"
 )
+
+
+class DiscordBudgetThresholdNotifier:
+    """將預算門檻通知私訊給唯一設定的機器人擁有者。"""
+
+    def __init__(self, client: discord.Client, owner_user_id: int) -> None:
+        self._client = client
+        self._owner_user_id = owner_user_id
+
+    async def notify_threshold(
+        self,
+        threshold_percent: int,
+        snapshot: BudgetSnapshot,
+    ) -> None:
+        """傳送不含模型內容或祕密的管理通知。"""
+
+        del snapshot
+        user = self._client.get_user(self._owner_user_id)
+        if user is None:
+            user = await self._client.fetch_user(self._owner_user_id)
+        await user.send(
+            f"Discord 助手的一次性 AI 預算實際用量已達 {threshold_percent}%。"
+            "這是管理資訊，請檢查預算狀態。"
+        )
 
 
 class DiscordSensitiveNotifier:
@@ -68,6 +93,7 @@ class DiscordAssistantClient(discord.Client):
         settings: Settings,
         repository: MessageRepository,
         segmenter: ConversationSegmenter,
+        budget_manager: BudgetManager,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -75,6 +101,8 @@ class DiscordAssistantClient(discord.Client):
 
         notifier = DiscordSensitiveNotifier(self, settings.sensitive_notification_user_ids)
         self._segmenter = segmenter
+        self._budget_manager = budget_manager
+        self._budget_notifier = DiscordBudgetThresholdNotifier(self, settings.owner_user_id)
         self._message_handler = MessageHandler(
             repository=repository,
             sensitive_filter=SensitiveFilter(),
@@ -91,12 +119,15 @@ class DiscordAssistantClient(discord.Client):
         if recovered:
             LOGGER.info("已補處理未切段訊息 count=%s", recovered)
         self.archive_inactive_segments.start()
+        self.dispatch_budget_notifications.start()
 
     async def close(self) -> None:
         """停止定期封存工作並關閉 Discord 連線。"""
 
         if self.archive_inactive_segments.is_running():
             self.archive_inactive_segments.cancel()
+        if self.dispatch_budget_notifications.is_running():
+            self.dispatch_budget_notifications.cancel()
         await super().close()
 
     @tasks.loop(minutes=1)
@@ -107,6 +138,15 @@ class DiscordAssistantClient(discord.Client):
             await self._segmenter.archive_inactive()
         except Exception as error:
             LOGGER.error("段落封存檢查失敗 error_type=%s", type(error).__name__)
+
+    @tasks.loop(minutes=1)
+    async def dispatch_budget_notifications(self) -> None:
+        """每分鐘傳送尚未完成的 70%／90% 預算通知。"""
+
+        try:
+            await self._budget_manager.dispatch_pending_notifications(self._budget_notifier)
+        except Exception as error:
+            LOGGER.error("預算門檻通知失敗 error_type=%s", type(error).__name__)
 
     async def on_ready(self) -> None:
         """記錄連線完成；日誌只包含必要 ID。"""

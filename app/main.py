@@ -6,6 +6,7 @@ import asyncio
 import logging
 from datetime import timedelta
 
+from app.ai.budget_manager import BudgetManager
 from app.bot.client import DiscordAssistantClient
 from app.config import Settings, get_settings
 from app.conversations.segmenter import ConversationSegmenter
@@ -48,6 +49,7 @@ async def run_discord(settings: Settings) -> int:
     await asyncio.to_thread(upgrade_database, settings.database_url)
     database = Database(settings.database_url)
     repository = MessageRepository(database.session_factory)
+    budget_manager = BudgetManager(database.session_factory)
     segmenter = ConversationSegmenter(
         database.session_factory,
         implicit_continuation_window=timedelta(
@@ -58,6 +60,7 @@ async def run_discord(settings: Settings) -> int:
         settings=settings,
         repository=repository,
         segmenter=segmenter,
+        budget_manager=budget_manager,
     )
     try:
         async with client:

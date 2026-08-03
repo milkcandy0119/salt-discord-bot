@@ -1,8 +1,8 @@
 # Discord Assistant
 
-這是一個分階段建立、可長期執行的 Discord 助手。目前完成「階段 2：對話段落引擎」。
-Discord 訊息接收、敏感資料閘門、持久化及免費確定性切段已可運作；AI、預算、摘要、向量、
-提醒及部署尚未啟用。
+這是一個分階段建立、可長期執行的 Discord 助手。目前完成「階段 3：一次性預算帳本與
+付費呼叫閘門」。Discord 訊息接收、安全持久化、免費切段及交易式預算控制已可運作；真實
+AI 回覆、摘要、向量、提醒及部署尚未啟用。
 
 ## 需求
 
@@ -58,6 +58,34 @@ uv run python -m app.main
 
 這些規則不讀取訊息語意，也不呼叫任何付費 API。
 
+## 一次性 AI 預算
+
+- 全域永久上限：US$10。
+- 背景摘要與 Embedding 上限：US$3。
+- 前景聊天可以使用全部尚未使用的全域額度。
+- 金額使用整數微美元，不使用浮點數。
+- 每次未來的付費呼叫都必須先預留，完成後依實際 Token 結算。
+- API 超時且用量不明時保留預留，不會假設費用為零。
+- 實際花費達 70%／90% 時各私訊擁有者一次。
+- 不會自動補額、按月重置或提供手動重置。
+
+目前沒有任何真實 AI 服務接入，因此帳本初始值全部是零，也不會自行產生費用。
+
+可用以下唯讀 SQL 查看實際資料庫狀態：
+
+```sql
+SELECT global_spent_microusd, global_reserved_microusd,
+       background_spent_microusd, background_reserved_microusd
+FROM budget_state WHERE id = 1;
+
+SELECT reservation_id, purpose, model_name, price_version,
+       reserved_cost_microusd, actual_cost_microusd, status
+FROM paid_ai_calls ORDER BY created_at DESC LIMIT 20;
+
+SELECT threshold_percent, status, attempts, sent_at
+FROM budget_threshold_notifications ORDER BY threshold_percent;
+```
+
 ## 敏感資料政策
 
 收到訊息後會先掃描常見 Discord Token、OpenAI API key、具名 API key／Token／密碼及私鑰：
@@ -85,4 +113,5 @@ uv run alembic upgrade head
 - `docs/architecture.md`：訊息流程、模組邊界、資料模型與限制。
 - `docs/decisions.md`：已確認的保守試跑政策及後續待確認項目。
 
-下一步是階段 3「一次性預算帳本與付費呼叫閘門」，但必須取得明確確認後才會開始。
+下一步是階段 4「AI 觸發、上下文與回覆」。進入前必須先確認觸發條件、聊天模型、價格表、
+系統提示、維護訊息與最大上下文。

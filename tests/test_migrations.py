@@ -1,15 +1,18 @@
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from app.storage.database import upgrade_database
 
 
-def test_phase_one_database_upgrade_preserves_existing_messages(tmp_path: Path) -> None:
-    database_path = tmp_path / "upgrade.sqlite3"
+def test_phase_one_database_upgrade_preserves_existing_messages(
+    temporary_test_directory: Path,
+) -> None:
+    database_path = temporary_test_directory / "upgrade.sqlite3"
     database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
     upgrade_database(database_url, revision="20260803_0001")
 
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         connection.execute(
             """
             INSERT INTO messages (
@@ -41,7 +44,7 @@ def test_phase_one_database_upgrade_preserves_existing_messages(tmp_path: Path) 
 
     upgrade_database(database_url)
 
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         message = connection.execute(
             "SELECT content, segment_id FROM messages WHERE discord_message_id = ?",
             ("existing-message",),
@@ -49,5 +52,4 @@ def test_phase_one_database_upgrade_preserves_existing_messages(tmp_path: Path) 
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert message == ("階段 1 既有訊息", None)
-    assert revision == ("20260803_0002",)
-
+    assert revision == ("20260803_0003",)
