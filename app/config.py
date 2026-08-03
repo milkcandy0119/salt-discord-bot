@@ -56,6 +56,11 @@ class Settings(BaseSettings):
         le=20_000,
     )
     ai_max_mentioned_participants: int = Field(default=3, ge=0, le=10)
+    ai_personal_memory_context_characters: int = Field(
+        default=1_500,
+        ge=0,
+        le=10_000,
+    )
     ai_chat_max_output_tokens: int = Field(default=800, ge=1, le=16_000)
     ai_chat_reasoning_effort: Literal["none", "low", "medium"] = "low"
     ai_maintenance_message: str = "目前 AI 回覆暫時無法使用，請稍後再試。"

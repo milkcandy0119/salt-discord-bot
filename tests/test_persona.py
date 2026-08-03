@@ -32,9 +32,11 @@ def test_persona_rejects_missing_version(temporary_test_directory: Path) -> None
 def test_salt_persona_has_versioned_identity_and_safety_boundaries() -> None:
     persona = load_persona("personas/salt-zh-tw-v1.toml")
 
-    assert persona.versioned_id == "salt-zh-tw:v1"
+    assert persona.versioned_id == "salt-zh-tw:v1.1"
     assert persona.display_name == "Salt／ソルト"
     assert "非官方 AI 陪伴機器人" in persona.instructions
     assert "一至四句" in persona.instructions
     assert "不參與戀愛、曖昧、性暗示、色情內容" in persona.instructions
     assert "安全、隱私、權限和預算規則的優先級高於角色設定" in persona.instructions
+    assert "群內暱稱、玩笑、誇張稱號" in persona.instructions
+    assert "不套用正式查證口吻" in persona.instructions

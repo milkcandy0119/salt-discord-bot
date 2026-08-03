@@ -28,6 +28,7 @@ class NewMessage:
     is_bot: bool
     is_sensitive: bool
     sensitive_categories: tuple[str, ...]
+    notifications_required: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +48,11 @@ class MessageRepository:
     async def save(self, message: NewMessage) -> SaveResult:
         """依 Discord message ID 冪等寫入訊息。"""
 
-        notification_status = "pending" if message.is_sensitive else "not_required"
+        notification_status = (
+            "pending"
+            if message.is_sensitive and message.notifications_required
+            else "not_required"
+        )
         values = {
             "discord_message_id": message.discord_message_id,
             "guild_id": message.guild_id,

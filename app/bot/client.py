@@ -17,11 +17,13 @@ from app.bot.channel_modes import (
     ReplyTriggerPolicy,
 )
 from app.bot.companion_scheduler import CompanionScheduler
+from app.bot.memory_commands import PersonalMemoryCommandGroup
 from app.bot.message_handler import IncomingMessage, MessageHandler, SensitiveNotice
 from app.config import Settings
 from app.conversations.context_builder import ContextBuilder
 from app.conversations.history_retriever import HistoricalContextRetriever
 from app.conversations.segmenter import ConversationSegmenter
+from app.memory.personal_memory import MemoryCaptureOutcome, PersonalMemoryService
 from app.security.sensitive_filter import SensitiveFilter
 from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.repositories import MessageRepository, NewMessage
@@ -112,6 +114,7 @@ class DiscordAssistantClient(discord.Client):
         background_repository: BackgroundMemoryRepository | None = None,
         background_worker: BackgroundWorker | None = None,
         history_retriever: HistoricalContextRetriever | None = None,
+        personal_memory_service: PersonalMemoryService | None = None,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -127,6 +130,7 @@ class DiscordAssistantClient(discord.Client):
         self._background_repository = background_repository
         self._background_worker = background_worker
         self._history_retriever = history_retriever
+        self._personal_memory_service = personal_memory_service
         self._budget_notifier = DiscordBudgetThresholdNotifier(self, settings.owner_user_id)
         self._mode_resolver = ChannelModeResolver(
             allowed_channel_ids=settings.allowed_channel_ids,
@@ -147,6 +151,14 @@ class DiscordAssistantClient(discord.Client):
             allowed_guild_ids=settings.allowed_guild_ids,
             allowed_channel_ids=settings.allowed_channel_ids,
         )
+        self.tree = discord.app_commands.CommandTree(self)
+        if personal_memory_service is not None:
+            self.tree.add_command(
+                PersonalMemoryCommandGroup(
+                    service=personal_memory_service,
+                    allowed_guild_ids=settings.allowed_guild_ids,
+                )
+            )
 
     async def setup_hook(self) -> None:
         """補處理重啟前未切段訊息，並啟動定期封存檢查。"""
@@ -154,6 +166,7 @@ class DiscordAssistantClient(discord.Client):
         recovered = await self._segmenter.assign_pending_messages()
         if recovered:
             LOGGER.info("已補處理未切段訊息 count=%s", recovered)
+        await self._sync_application_commands()
         self.archive_inactive_segments.start()
         self.dispatch_budget_notifications.start()
         if self._settings.background_ai_enabled and self._background_worker is not None:
@@ -161,6 +174,29 @@ class DiscordAssistantClient(discord.Client):
                 minutes=self._settings.background_job_interval_minutes
             )
             self.process_background_jobs.start()
+
+    async def _sync_application_commands(self) -> None:
+        """只把個人記憶命令同步到明確允許的伺服器。"""
+
+        if self._personal_memory_service is None:
+            return
+        for guild_id in self._settings.allowed_guild_ids:
+            guild = discord.Object(id=guild_id)
+            try:
+                self.tree.copy_global_to(guild=guild)
+                commands = await self.tree.sync(guild=guild)
+            except discord.DiscordException as error:
+                LOGGER.error(
+                    "個人記憶 Slash Command 同步失敗 guild_id=%s error_type=%s",
+                    guild_id,
+                    type(error).__name__,
+                )
+            else:
+                LOGGER.info(
+                    "個人記憶 Slash Command 同步完成 guild_id=%s count=%s",
+                    guild_id,
+                    len(commands),
+                )
 
     async def close(self) -> None:
         """停止定期封存工作並關閉 Discord 連線。"""
@@ -278,11 +314,91 @@ class DiscordAssistantClient(discord.Client):
 
         if outcome.status != "stored" or incoming.author_is_bot:
             return
+        memory_outcome = await self._capture_personal_memory_safely(incoming)
+        if memory_outcome is not None and memory_outcome.status in {
+            "created",
+            "duplicate",
+            "invalid_content",
+            "blocked_sensitive",
+        }:
+            await self._send_memory_event_reply(message, memory_outcome)
+            return
         try:
             await self._route_ai_reply(message, incoming)
         except Exception as error:
             LOGGER.error(
                 "AI 回覆流程失敗 message_id=%s error_type=%s",
+                message.id,
+                type(error).__name__,
+            )
+
+    async def _capture_personal_memory_safely(
+        self,
+        incoming: IncomingMessage,
+    ) -> MemoryCaptureOutcome | None:
+        """擷取失敗不得阻止既有聊天回覆流程。"""
+
+        if self._personal_memory_service is None or incoming.guild_id is None:
+            return None
+        try:
+            memory_outcome = await self._personal_memory_service.capture_explicit_message(
+                guild_id=str(incoming.guild_id),
+                user_id=str(incoming.author_id),
+                message_id=incoming.discord_message_id,
+                content=incoming.content,
+            )
+            if memory_outcome.status in {"created", "duplicate"}:
+                memory_id = (
+                    memory_outcome.save_result.memory.id
+                    if memory_outcome.save_result is not None
+                    else None
+                )
+                LOGGER.info(
+                    "個人記憶事件完成 message_id=%s user_id=%s memory_id=%s status=%s",
+                    incoming.discord_message_id,
+                    incoming.author_id,
+                    memory_id,
+                    memory_outcome.status,
+                )
+            return memory_outcome
+        except Exception as error:
+            LOGGER.error(
+                "個人記憶事件處理失敗 message_id=%s user_id=%s error_type=%s",
+                incoming.discord_message_id,
+                incoming.author_id,
+                type(error).__name__,
+            )
+            return None
+
+    async def _send_memory_event_reply(
+        self,
+        message: discord.Message,
+        outcome: MemoryCaptureOutcome,
+    ) -> None:
+        """以固定免費文字確認記憶事件，避免再呼叫聊天模型。"""
+
+        memory_id = (
+            outcome.save_result.memory.id
+            if outcome.save_result is not None
+            else None
+        )
+        if outcome.status == "created":
+            content = f"記住了喵，記憶編號是 #{memory_id}"
+        elif outcome.status == "duplicate":
+            content = f"這個已經記得了，編號是 #{memory_id}"
+        elif outcome.status == "blocked_sensitive":
+            content = "這段可能含敏感資料，Salt 不會把它存成記憶"
+        else:
+            content = "這段記憶太長或格式不完整，請改用 /memory set"
+        try:
+            await message.reply(
+                content,
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.DiscordException as error:
+            LOGGER.error(
+                "個人記憶確認回覆失敗 message_id=%s error_type=%s",
                 message.id,
                 type(error).__name__,
             )

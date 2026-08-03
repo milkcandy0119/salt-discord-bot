@@ -52,7 +52,7 @@ def test_phase_one_database_upgrade_preserves_existing_messages(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert message == ("階段 1 既有訊息", None)
-    assert revision == ("20260804_0004",)
+    assert revision == ("20260804_0005",)
 
 
 def test_phase_five_migration_does_not_queue_existing_archived_segments(
@@ -98,3 +98,24 @@ def test_phase_five_migration_does_not_queue_existing_archived_segments(
 
     assert job_count == (0,)
     assert {"background_jobs", "segment_summaries", "summary_embeddings"} <= tables
+
+
+def test_personal_memory_migration_does_not_infer_existing_chat(
+    temporary_test_directory: Path,
+) -> None:
+    """升級只建立記憶結構，不得從既有聊天自動推測個人資料。"""
+
+    database_path = temporary_test_directory / "personal-memory-upgrade.sqlite3"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    upgrade_database(database_url, revision="20260804_0004")
+
+    upgrade_database(database_url)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        memory_count = connection.execute(
+            "SELECT COUNT(*) FROM personal_memories"
+        ).fetchone()
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+
+    assert memory_count == (0,)
+    assert revision == ("20260804_0005",)

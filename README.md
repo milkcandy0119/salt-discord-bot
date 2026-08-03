@@ -1,6 +1,6 @@
 # Discord Assistant
 
-這是一個分階段建立、可長期執行的 Discord 助手。目前完成「階段 5：背景摘要與向量檢索」。
+這是一個分階段建立、可長期執行的 Discord 助手。目前完成到「階段 6.1：基本個人記憶」。
 Discord 訊息接收、安全持久化、免費切段、交易式預算控制、normal／companion 頻道模式、
 受控 AI 回覆、貼圖名稱中繼資料，以及可選的背景摘要與同頻道歷史檢索已可運作；歷史匯入、
 提醒及部署尚未啟用。
@@ -134,7 +134,7 @@ SELECT summary_id, chunk_index, model_name, dimension, length(vector_blob) AS by
 FROM summary_embeddings ORDER BY id DESC LIMIT 20;
 ```
 
-## 階段 6 免費歷史分析
+## 階段 6 歷史分析與受控正式匯入
 
 正式匯入前必須先執行唯讀分析。分析工具會登入 Discord 並讀取白名單頻道歷史，但不傳送或
 修改 Discord 訊息、不寫入資料庫、不建立背景工作，也不呼叫 OpenAI：
@@ -150,6 +150,48 @@ uv run python -m app.history_cli analyze --limit-per-channel 10000
 `estimated_total_cost_microusd` 使用免費切段模擬，`maximum_total_cost_microusd` 則保守假設每則
 合格新訊息各自形成一段。兩者都包含資料庫中已封存但尚未摘要的段落。分析結果不是正式匯入
 授權；保存新歷史訊息、排摘要工作及向量化仍須再次明確確認。
+
+取得明確確認後，正式匯入命令仍會重新讀取同一份歷史快照並估價。最新最壞成本高於批准值、
+歷史被截斷或背景／全域預算不足時，會在資料庫寫入與 OpenAI 呼叫前停止：
+
+```powershell
+.\.tools\bin\uv.exe run --offline --cache-dir .uv-cache python -m app.history_cli import-history `
+  --limit-per-channel 10000 `
+  --confirmation "確認執行階段 6 正式匯入" `
+  --maximum-approved-cost-microusd 17952 `
+  --approval-baseline-global-committed-microusd 213225
+```
+
+上面的兩個數值只是這次測試伺服器報告中的批准上限與 `global_committed_microusd`，換伺服器、
+頻道、資料庫或訊息範圍時不得照抄，必須先重新執行免費分析並取得新的明確批准。基準值讓同一
+次匯入即使程序中斷後重跑，仍只能共用原來的總費用上限。正式匯入不要求把
+`BACKGROUND_AI_ENABLED` 改成 `true`；它會在這次命令內受控處理既有封存段落。Discord message
+ID、背景工作與摘要／向量唯一鍵都具有冪等保護，中斷後可用相同參數重跑。匯入舊敏感訊息時
+仍會遮罩內容，但不會補發舊事件通知。
+
+完成後可用唯讀狀態命令驗收，不會讀取 Discord 或呼叫 OpenAI：
+
+```powershell
+.\.tools\bin\uv.exe run --offline --cache-dir .uv-cache python -m app.history_cli status
+```
+
+## 階段 6.1 基本個人記憶
+
+個人記憶以 Discord guild ID 與 user ID 隔離，不依賴可變更的暱稱。日常聊天只有明確使用
+「請記得我……」或「記住我……」時，才使用本機規則建立記憶；一般聊天不會被 AI 猜測成
+永久個人資料。成功時機器人會用固定免費文字回覆記憶編號，不呼叫聊天模型。
+
+使用者也可以使用只對自己可見的 Slash Commands：
+
+- `/memory view`：查看 Salt 在目前伺服器對自己的記憶與編號。
+- `/memory set content:內容`：新增自己的記憶。
+- `/memory set content:新內容 memory_id:編號`：修改自己的指定記憶。
+- `/memory delete memory_id:編號`：刪除自己的指定記憶。
+
+命令不接受目標使用者參數，因此不能查看、修改或刪除別人的記憶。每筆最多 200 字，可能含
+API key、Token、密碼或私鑰的內容會被拒絕。聊天時最多加入
+`AI_PERSONAL_MEMORY_CONTEXT_CHARACTERS` 個字元的目前發言者記憶；這些資料只供個人化，不具
+系統指令權限，也不當成已證實的客觀事實。啟動機器人時會把命令同步到白名單伺服器。
 
 可用以下唯讀 SQL 查看實際資料庫狀態：
 
@@ -193,5 +235,4 @@ uv run alembic upgrade head
 - `docs/architecture.md`：訊息流程、模組邊界、資料模型與限制。
 - `docs/decisions.md`：已確認的保守試跑政策及後續待確認項目。
 
-階段 6 的免費分析工具已完成；正式匯入仍需先顯示最新估算並取得明確確認。後續階段 7 是
-持久化提醒、時區與管理查詢功能。
+階段 6.1 已加入基本個人記憶。後續階段 7 是持久化提醒、時區與管理查詢功能。

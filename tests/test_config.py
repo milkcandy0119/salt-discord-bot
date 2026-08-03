@@ -17,6 +17,7 @@ def test_defaults_are_safe_without_credentials() -> None:
     assert settings.ai_recent_messages_per_participant == 4
     assert settings.ai_recent_participant_context_characters == 2_000
     assert settings.ai_max_mentioned_participants == 3
+    assert settings.ai_personal_memory_context_characters == 1_500
     assert settings.background_ai_enabled is False
     assert settings.ai_summary_model == "gpt-5.4-nano-2026-03-17"
     assert settings.ai_summary_max_output_tokens == 300

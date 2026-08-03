@@ -95,6 +95,39 @@ class BackgroundMemoryRepository:
                 created += int(result.rowcount == 1)
         return created
 
+    async def enqueue_archived_channels(
+        self,
+        channel_ids: frozenset[str],
+        *,
+        max_attempts: int,
+        now: datetime | None = None,
+    ) -> int:
+        """為指定頻道全部已封存段落冪等補建摘要工作。"""
+
+        if not channel_ids:
+            return 0
+        async with self._session_factory() as session:
+            segment_ids = tuple(
+                (
+                    await session.scalars(
+                        select(ConversationSegmentRecord.id)
+                        .where(
+                            ConversationSegmentRecord.channel_id.in_(channel_ids),
+                            ConversationSegmentRecord.status == "archived",
+                        )
+                        .order_by(
+                            ConversationSegmentRecord.created_at,
+                            ConversationSegmentRecord.id,
+                        )
+                    )
+                ).all()
+            )
+        return await self.enqueue_archived_segments(
+            segment_ids,
+            max_attempts=max_attempts,
+            now=now,
+        )
+
     async def claim_oldest(
         self,
         *,

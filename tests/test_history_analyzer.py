@@ -183,3 +183,38 @@ async def test_analysis_reports_truncated_channels_and_attachment_capacity(
     assert report.truncated_channel_ids == ("2",)
     assert report.attachment_count == 2
     assert report.advertised_attachment_bytes == 12_345
+
+
+@pytest.mark.asyncio
+async def test_analysis_includes_active_segments_that_formal_import_will_archive(
+    database: Database,
+) -> None:
+    """正式匯入會封存的舊活動段落也必須先計入最壞成本。"""
+
+    created_at = datetime.now(UTC) - timedelta(hours=2)
+    repository = MessageRepository(database.session_factory)
+    await repository.save(
+        NewMessage(
+            discord_message_id="old-active",
+            guild_id="1",
+            channel_id="2",
+            author_id="10",
+            author_display_name="測試成員",
+            content="尚未封存但已經逾時",
+            discord_created_at=created_at,
+            received_at=created_at,
+            replied_to_message_id=None,
+            is_bot=False,
+            is_sensitive=False,
+            sensitive_categories=(),
+        )
+    )
+    await ConversationSegmenter(database.session_factory).assign_message("old-active")
+
+    report = await _analyzer(database, FakeHistorySource(())).analyze(
+        channel_ids=frozenset({2}),
+        limit_per_channel=100,
+    )
+
+    assert report.existing_archived_segments_without_summary == 1
+    assert report.maximum_total_cost_microusd > 0

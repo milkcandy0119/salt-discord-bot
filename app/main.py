@@ -17,9 +17,11 @@ from app.conversations.context_builder import ContextBuilder
 from app.conversations.history_retriever import HistoricalContextRetriever
 from app.conversations.segmenter import ConversationSegmenter
 from app.logging_config import configure_logging
+from app.memory.personal_memory import PersonalMemoryService
 from app.security.sensitive_filter import SensitiveFilter
 from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.database import Database, upgrade_database
+from app.storage.personal_memories import PersonalMemoryRepository
 from app.storage.repositories import MessageRepository
 from app.storage.vector_store import SQLiteVectorStore
 from app.workers.background_worker import BackgroundWorker
@@ -61,6 +63,11 @@ async def run_discord(settings: Settings) -> int:
     await asyncio.to_thread(upgrade_database, settings.database_url)
     database = Database(settings.database_url)
     repository = MessageRepository(database.session_factory)
+    personal_memory_repository = PersonalMemoryRepository(database.session_factory)
+    personal_memory_service = PersonalMemoryService(
+        personal_memory_repository,
+        sensitive_filter=SensitiveFilter(),
+    )
     background_repository = BackgroundMemoryRepository(database.session_factory)
     budget_manager = BudgetManager(database.session_factory)
     persona = load_persona(settings.ai_persona_path)
@@ -101,6 +108,10 @@ async def run_discord(settings: Settings) -> int:
             settings.ai_recent_participant_context_characters
         ),
         maximum_mentioned_participants=settings.ai_max_mentioned_participants,
+        personal_memory_repository=personal_memory_repository,
+        maximum_personal_memory_characters=(
+            settings.ai_personal_memory_context_characters
+        ),
     )
     segmenter = ConversationSegmenter(
         database.session_factory,
@@ -196,6 +207,7 @@ async def run_discord(settings: Settings) -> int:
         background_repository=background_repository,
         background_worker=background_worker,
         history_retriever=history_retriever,
+        personal_memory_service=personal_memory_service,
     )
     try:
         async with client:

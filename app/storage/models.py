@@ -14,6 +14,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -69,6 +70,32 @@ class MessageRecord(Base):
         ForeignKey("conversation_segments.id", ondelete="SET NULL"),
         index=True,
     )
+
+
+class PersonalMemoryRecord(Base):
+    """由使用者自己建立、按 Discord user ID 隔離的基本記憶。"""
+
+    __tablename__ = "personal_memories"
+    __table_args__ = (
+        UniqueConstraint(
+            "guild_id",
+            "user_id",
+            "normalized_content",
+            name="uq_personal_memory_owner_content",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    guild_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_content: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_message_id: Mapped[str | None] = mapped_column(
+        String(32), unique=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class BudgetStateRecord(Base):

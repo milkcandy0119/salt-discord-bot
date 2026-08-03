@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.ai.budget_manager import (
@@ -100,6 +100,8 @@ class HistoryAnalysisReport:
     maximum_total_cost_microusd: int
     background_remaining_microusd: int
     global_remaining_microusd: int
+    background_committed_microusd: int
+    global_committed_microusd: int
     estimated_cost_fits_budget: bool
     maximum_cost_fits_budget: bool
     paid_api_calls_made: int = 0
@@ -139,6 +141,7 @@ class HistoryAnalyzer:
         embedding_price: ModelPrice,
         summary_max_output_tokens: int,
         implicit_continuation_window: timedelta,
+        archive_after: timedelta = timedelta(minutes=30),
     ) -> None:
         self._session_factory = session_factory
         self._source = source
@@ -148,6 +151,7 @@ class HistoryAnalyzer:
         self._embedding_price = embedding_price
         self._summary_max_output_tokens = summary_max_output_tokens
         self._implicit_continuation_window = implicit_continuation_window
+        self._archive_after = archive_after
 
     async def analyze(
         self,
@@ -167,6 +171,27 @@ class HistoryAnalyzer:
             limit_per_channel=limit_per_channel,
             after=after,
         )
+        return await self.analyze_read_result(
+            read_result,
+            channel_ids=channel_ids,
+            limit_per_channel=limit_per_channel,
+            after=after,
+        )
+
+    async def analyze_read_result(
+        self,
+        read_result: HistoryReadResult,
+        *,
+        channel_ids: frozenset[int],
+        limit_per_channel: int,
+        after: datetime | None = None,
+    ) -> HistoryAnalysisReport:
+        """分析已讀取快照，讓正式匯入與估價使用完全相同的資料。"""
+
+        if not channel_ids:
+            raise ValueError("歷史分析至少需要一個頻道")
+        if limit_per_channel <= 0:
+            raise ValueError("每個頻道的歷史訊息上限必須大於零")
         messages = tuple(
             sorted(
                 read_result.messages,
@@ -215,9 +240,11 @@ class HistoryAnalyzer:
             text_character_count += len(stored_content)
             text_utf8_bytes += len(stored_content.encode("utf-8"))
 
+        generated_at = datetime.now(UTC)
         estimated_segments = self._estimate_segments(tuple(eligible))
         existing_sources = await self._existing_unsummarized_sources(
-            frozenset(str(channel_id) for channel_id in channel_ids)
+            frozenset(str(channel_id) for channel_id in channel_ids),
+            as_of=generated_at,
         )
         pending_jobs = await self._pending_background_job_count()
         estimated_summary_sources = (
@@ -251,7 +278,7 @@ class HistoryAnalyzer:
         maximum_total = maximum_summary_cost + maximum_embedding_cost
         return HistoryAnalysisReport(
             analysis_version=ANALYSIS_VERSION,
-            generated_at=datetime.now(UTC).isoformat(),
+            generated_at=generated_at.isoformat(),
             channel_count=len(channel_ids),
             limit_per_channel=limit_per_channel,
             after=after.isoformat() if after is not None else None,
@@ -280,6 +307,11 @@ class HistoryAnalyzer:
             maximum_total_cost_microusd=maximum_total,
             background_remaining_microusd=background_remaining,
             global_remaining_microusd=global_remaining,
+            background_committed_microusd=(
+                snapshot.background_spent_microusd
+                + snapshot.background_reserved_microusd
+            ),
+            global_committed_microusd=snapshot.global_committed_microusd,
             estimated_cost_fits_budget=(
                 estimated_total <= background_remaining
                 and estimated_total <= global_remaining
@@ -310,8 +342,10 @@ class HistoryAnalyzer:
     async def _existing_unsummarized_sources(
         self,
         channel_ids: frozenset[str],
+        *,
+        as_of: datetime,
     ) -> tuple[tuple[HistoricalMessage, ...], ...]:
-        """讀取已封存但尚無摘要的非敏感來源，仍不建立任何工作。"""
+        """讀取已封存或本次會封存且尚無摘要的非敏感來源。"""
 
         summary_exists = select(SegmentSummaryRecord.id).where(
             SegmentSummaryRecord.segment_id == ConversationSegmentRecord.id
@@ -322,7 +356,16 @@ class HistoryAnalyzer:
                     select(ConversationSegmentRecord.id)
                     .where(
                         ConversationSegmentRecord.channel_id.in_(channel_ids),
-                        ConversationSegmentRecord.status == "archived",
+                        or_(
+                            ConversationSegmentRecord.status == "archived",
+                            (
+                                (ConversationSegmentRecord.status == "active")
+                                & (
+                                    ConversationSegmentRecord.last_message_at
+                                    <= as_of - self._archive_after
+                                )
+                            ),
+                        ),
                         ~summary_exists,
                     )
                     .order_by(ConversationSegmentRecord.created_at)
