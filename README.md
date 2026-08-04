@@ -3,7 +3,7 @@
 這是一個分階段建立、可長期執行的 Discord 助手。目前完成到「階段 6.1：基本個人記憶」。
 Discord 訊息接收、安全持久化、免費切段、交易式預算控制、normal／companion 頻道模式、
 受控 AI 回覆、貼圖名稱中繼資料，以及可選的背景摘要與同頻道歷史檢索已可運作；歷史匯入、
-提醒及部署尚未啟用。
+提醒與管理功能已實作；正式部署尚未啟用。
 
 ## 需求
 
@@ -193,6 +193,31 @@ API key、Token、密碼或私鑰的內容會被拒絕。聊天時最多加入
 `AI_PERSONAL_MEMORY_CONTEXT_CHARACTERS` 個字元的目前發言者記憶；這些資料只供個人化，不具
 系統指令權限，也不當成已證實的客觀事實。啟動機器人時會把命令同步到白名單伺服器。
 
+擁有者及 `DISCORD_ADMIN_USER_IDS` 指定管理員另可使用：
+
+- `/memory admin-view user:成員`：私密查看指定成員在目前伺服器的記憶。
+- `/memory admin-set user:成員 memory_id:編號 content:內容`：修改該成員已存在的指定記憶。
+
+管理員不能替他人新增或刪除記憶。成功查閱及修改會保存 actor、target 與記憶 ID 稽核資料，
+不在稽核表重複保存記憶內容。
+
+## 階段 7 提醒與管理功能
+
+提醒完全不依賴 AI。預設時區為 `Asia/Taipei`，使用標準 `tzdata` 支援 IANA 時區；只接受
+`YYYY-MM-DD` 與 `HH:MM` 明確時間，不猜測自然語言。所有命令結果均為 ephemeral：
+
+- `/timezone view`：查看自己的提醒時區。
+- `/timezone set timezone:Asia/Taipei`：設定自己在目前伺服器的時區。
+- `/remind create date:2026-08-05 time:14:30 content:內容`：建立持久化提醒。
+- `/remind list`：列出自己的待處理提醒。
+- `/remind cancel reminder_id:編號`：取消自己的待處理提醒。
+- `/bot status`：只有擁有者及指定管理員可查看健康、總用量、背景用量、背景工作、提醒及
+  70%／90% 預算通知狀態。
+
+到期提醒只私訊建立者，停用 mentions。機器人離線時提醒留在 SQLite，重啟後會補處理。禁止
+私訊或找不到使用者時保留 `failed` 紀錄，不在公開頻道補發；暫時性 Discord 錯誤才依上限
+退避重試。提醒內容最多 500 字，可能含祕密時拒絕保存。
+
 可用以下唯讀 SQL 查看實際資料庫狀態：
 
 ```sql
@@ -235,4 +260,5 @@ uv run alembic upgrade head
 - `docs/architecture.md`：訊息流程、模組邊界、資料模型與限制。
 - `docs/decisions.md`：已確認的保守試跑政策及後續待確認項目。
 
-階段 6.1 已加入基本個人記憶。後續階段 7 是持久化提醒、時區與管理查詢功能。
+階段 7 已加入持久化提醒、時區與管理查詢。後續階段 8 是 Docker Compose、健康檢查與加密
+備份。

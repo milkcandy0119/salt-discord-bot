@@ -18,10 +18,13 @@ from app.conversations.history_retriever import HistoricalContextRetriever
 from app.conversations.segmenter import ConversationSegmenter
 from app.logging_config import configure_logging
 from app.memory.personal_memory import PersonalMemoryService
+from app.reminders.service import ReminderService
 from app.security.sensitive_filter import SensitiveFilter
+from app.storage.admin_audit import AdminAuditRepository
 from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.database import Database, upgrade_database
 from app.storage.personal_memories import PersonalMemoryRepository
+from app.storage.reminders import ReminderRepository
 from app.storage.repositories import MessageRepository
 from app.storage.vector_store import SQLiteVectorStore
 from app.workers.background_worker import BackgroundWorker
@@ -64,9 +67,17 @@ async def run_discord(settings: Settings) -> int:
     database = Database(settings.database_url)
     repository = MessageRepository(database.session_factory)
     personal_memory_repository = PersonalMemoryRepository(database.session_factory)
+    reminder_repository = ReminderRepository(database.session_factory)
+    admin_audit_repository = AdminAuditRepository(database.session_factory)
     personal_memory_service = PersonalMemoryService(
         personal_memory_repository,
         sensitive_filter=SensitiveFilter(),
+    )
+    reminder_service = ReminderService(
+        reminder_repository,
+        sensitive_filter=SensitiveFilter(),
+        default_timezone=settings.reminder_default_timezone,
+        max_attempts=settings.reminder_max_attempts,
     )
     background_repository = BackgroundMemoryRepository(database.session_factory)
     budget_manager = BudgetManager(database.session_factory)
@@ -208,6 +219,9 @@ async def run_discord(settings: Settings) -> int:
         background_worker=background_worker,
         history_retriever=history_retriever,
         personal_memory_service=personal_memory_service,
+        reminder_service=reminder_service,
+        reminder_repository=reminder_repository,
+        admin_audit_repository=admin_audit_repository,
     )
     try:
         async with client:

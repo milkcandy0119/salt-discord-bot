@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     background_job_retry_base_seconds: int = Field(default=60, ge=1, le=3_600)
     background_job_budget_retry_minutes: int = Field(default=5, ge=1, le=1_440)
     background_job_stale_minutes: int = Field(default=5, ge=1, le=60)
+    reminder_default_timezone: str = "Asia/Taipei"
+    reminder_dispatch_interval_seconds: int = Field(default=30, ge=5, le=300)
+    reminder_max_per_run: int = Field(default=20, ge=1, le=1_000)
+    reminder_max_attempts: int = Field(default=5, ge=1, le=20)
+    reminder_retry_base_seconds: int = Field(default=60, ge=1, le=3_600)
+    reminder_stale_minutes: int = Field(default=5, ge=1, le=60)
 
     @field_validator("discord_bot_token", "openai_api_key", mode="before")
     @classmethod
@@ -112,6 +118,7 @@ class Settings(BaseSettings):
         "ai_summary_price_version",
         "ai_embedding_model",
         "ai_embedding_price_version",
+        "reminder_default_timezone",
         mode="before",
     )
     @classmethod

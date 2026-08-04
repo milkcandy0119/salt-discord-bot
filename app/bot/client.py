@@ -10,6 +10,7 @@ from discord.ext import tasks
 
 from app.ai.budget_manager import BudgetManager, BudgetSnapshot
 from app.ai.chat_service import ChatService
+from app.bot.admin_commands import BotAdminCommandGroup
 from app.bot.channel_modes import (
     ChannelMode,
     ChannelModeResolver,
@@ -19,13 +20,19 @@ from app.bot.channel_modes import (
 from app.bot.companion_scheduler import CompanionScheduler
 from app.bot.memory_commands import PersonalMemoryCommandGroup
 from app.bot.message_handler import IncomingMessage, MessageHandler, SensitiveNotice
+from app.bot.reminder_commands import ReminderCommandGroup, TimezoneCommandGroup
+from app.bot.reminder_sender import DiscordReminderSender
 from app.config import Settings
 from app.conversations.context_builder import ContextBuilder
 from app.conversations.history_retriever import HistoricalContextRetriever
 from app.conversations.segmenter import ConversationSegmenter
 from app.memory.personal_memory import MemoryCaptureOutcome, PersonalMemoryService
+from app.reminders.dispatcher import ReminderDispatcher
+from app.reminders.service import ReminderService
 from app.security.sensitive_filter import SensitiveFilter
+from app.storage.admin_audit import AdminAuditRepository
 from app.storage.background_memory import BackgroundMemoryRepository
+from app.storage.reminders import ReminderRepository
 from app.storage.repositories import MessageRepository, NewMessage
 from app.workers.background_worker import BackgroundWorker
 
@@ -115,6 +122,9 @@ class DiscordAssistantClient(discord.Client):
         background_worker: BackgroundWorker | None = None,
         history_retriever: HistoricalContextRetriever | None = None,
         personal_memory_service: PersonalMemoryService | None = None,
+        reminder_service: ReminderService | None = None,
+        reminder_repository: ReminderRepository | None = None,
+        admin_audit_repository: AdminAuditRepository | None = None,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -131,6 +141,21 @@ class DiscordAssistantClient(discord.Client):
         self._background_worker = background_worker
         self._history_retriever = history_retriever
         self._personal_memory_service = personal_memory_service
+        self._reminder_repository = reminder_repository
+        self._admin_audit_repository = admin_audit_repository
+        self._reminder_dispatcher = (
+            ReminderDispatcher(
+                repository=reminder_repository,
+                sender=DiscordReminderSender(self),
+                stale_after=timedelta(minutes=settings.reminder_stale_minutes),
+                retry_base_delay=timedelta(
+                    seconds=settings.reminder_retry_base_seconds
+                ),
+                maximum_per_run=settings.reminder_max_per_run,
+            )
+            if reminder_repository is not None
+            else None
+        )
         self._budget_notifier = DiscordBudgetThresholdNotifier(self, settings.owner_user_id)
         self._mode_resolver = ChannelModeResolver(
             allowed_channel_ids=settings.allowed_channel_ids,
@@ -157,6 +182,37 @@ class DiscordAssistantClient(discord.Client):
                 PersonalMemoryCommandGroup(
                     service=personal_memory_service,
                     allowed_guild_ids=settings.allowed_guild_ids,
+                    admin_user_ids=settings.sensitive_notification_user_ids,
+                    audit_repository=admin_audit_repository,
+                )
+            )
+        if reminder_service is not None:
+            self.tree.add_command(
+                ReminderCommandGroup(
+                    service=reminder_service,
+                    allowed_guild_ids=settings.allowed_guild_ids,
+                )
+            )
+            self.tree.add_command(
+                TimezoneCommandGroup(
+                    service=reminder_service,
+                    allowed_guild_ids=settings.allowed_guild_ids,
+                )
+            )
+        if (
+            reminder_repository is not None
+            and admin_audit_repository is not None
+            and background_repository is not None
+        ):
+            self.tree.add_command(
+                BotAdminCommandGroup(
+                    client=self,
+                    budget_manager=budget_manager,
+                    background_repository=background_repository,
+                    reminder_repository=reminder_repository,
+                    audit_repository=admin_audit_repository,
+                    allowed_guild_ids=settings.allowed_guild_ids,
+                    admin_user_ids=settings.sensitive_notification_user_ids,
                 )
             )
 
@@ -174,11 +230,16 @@ class DiscordAssistantClient(discord.Client):
                 minutes=self._settings.background_job_interval_minutes
             )
             self.process_background_jobs.start()
+        if self._reminder_dispatcher is not None:
+            self.dispatch_reminders.change_interval(
+                seconds=self._settings.reminder_dispatch_interval_seconds
+            )
+            self.dispatch_reminders.start()
 
     async def _sync_application_commands(self) -> None:
-        """只把個人記憶命令同步到明確允許的伺服器。"""
+        """只把應用程式命令同步到明確允許的伺服器。"""
 
-        if self._personal_memory_service is None:
+        if not self.tree.get_commands():
             return
         for guild_id in self._settings.allowed_guild_ids:
             guild = discord.Object(id=guild_id)
@@ -187,13 +248,13 @@ class DiscordAssistantClient(discord.Client):
                 commands = await self.tree.sync(guild=guild)
             except discord.DiscordException as error:
                 LOGGER.error(
-                    "個人記憶 Slash Command 同步失敗 guild_id=%s error_type=%s",
+                    "應用程式 Slash Command 同步失敗 guild_id=%s error_type=%s",
                     guild_id,
                     type(error).__name__,
                 )
             else:
                 LOGGER.info(
-                    "個人記憶 Slash Command 同步完成 guild_id=%s count=%s",
+                    "應用程式 Slash Command 同步完成 guild_id=%s count=%s",
                     guild_id,
                     len(commands),
                 )
@@ -208,6 +269,8 @@ class DiscordAssistantClient(discord.Client):
             self.dispatch_budget_notifications.cancel()
         if self.process_background_jobs.is_running():
             self.process_background_jobs.cancel()
+        if self.dispatch_reminders.is_running():
+            self.dispatch_reminders.cancel()
         await super().close()
 
     @tasks.loop(minutes=1)
@@ -268,6 +331,24 @@ class DiscordAssistantClient(discord.Client):
             await self._budget_manager.dispatch_pending_notifications(self._budget_notifier)
         except Exception as error:
             LOGGER.error("預算門檻通知失敗 error_type=%s", type(error).__name__)
+
+    @tasks.loop(seconds=30)
+    async def dispatch_reminders(self) -> None:
+        """定期派送到期私訊提醒，不呼叫 AI，也不公開補發。"""
+
+        if self._reminder_dispatcher is None:
+            return
+        try:
+            result = await self._reminder_dispatcher.run_once()
+            if any((result.sent, result.retried, result.failed)):
+                LOGGER.info(
+                    "提醒派送批次完成 sent=%s retried=%s failed=%s",
+                    result.sent,
+                    result.retried,
+                    result.failed,
+                )
+        except Exception as error:
+            LOGGER.error("提醒派送批次失敗 error_type=%s", type(error).__name__)
 
     async def on_ready(self) -> None:
         """記錄連線完成；日誌只包含必要 ID。"""

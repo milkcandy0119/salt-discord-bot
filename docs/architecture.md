@@ -40,6 +40,8 @@
 - `app.history_cli`：免費分析及受控正式匯入命令列入口。
 - `app.memory.personal_memory`：免費明確事件擷取及共用個人記憶安全規則。
 - `app.bot.memory_commands`：只能操作 Interaction 目前使用者記憶的私密 Slash Commands。
+- `app.reminders.service`／`dispatcher`：嚴格時區換算及可重啟恢復的免費提醒派送。
+- `app.bot.reminder_commands`／`admin_commands`：本人提醒與固定管理員 ID 的私密狀態查詢。
 - `app.security.sensitive_filter`：完全在本機執行的確定性敏感資料規則。
 - `app.security.access_policy`：擁有者與管理員的敏感事件查閱權限。
 - `app.storage`：SQLAlchemy 非同步 session、資料模型與冪等 repository。
@@ -69,6 +71,13 @@
 可選來源訊息 ID，以及建立／更新時間。命令的更新與刪除查詢必須同時符合記憶 ID、guild ID
 與 Interaction user ID；migration 不從既有聊天推測或回填記憶。
 
+階段 7 新增：
+
+- `user_timezones`：依 guild/user 唯一保存 IANA 時區；未設定時使用 `Asia/Taipei`。
+- `reminders`：擁有者、內容、時區快照、UTC 到期時間、狀態、嘗試次數、claim、取消、成功及
+  錯誤代碼。失敗記錄保留，不儲存公開頻道補發目標。
+- `admin_audit_events`：管理員 actor、動作、target user/record ID 與時間，不保存被查看內容。
+
 ## 階段 6.1 基本個人記憶
 
 一般訊息保存成功後，本機規則只辨識明確的「請記得我……／記住我……」事件。建立成功會
@@ -81,6 +90,22 @@
 Context Builder 只載入觸發訊息作者在相同 guild 的記憶，最多 20 筆並受獨立字元上限控制。
 記憶以普通 user role 背景區塊加入，明確標示不是系統指令或已驗證事實；安全、人設、權限與
 預算規則仍具有更高優先級。
+
+管理員記憶命令仍限定相同 guild。查看及成功修改會寫入不含內容的稽核事件；第一版刻意不
+提供管理員替他人新增或刪除記憶的介面。
+
+## 階段 7 提醒與管理流程
+
+提醒只接受明確本地日期、時間與已驗證 IANA 時區。轉換時會拒絕夏令時間造成的不存在或重複
+本地時間，保存時固定轉成 UTC，顯示時使用建立當下的時區快照。
+
+派送器每 30 秒原子領取有限批到期提醒。成功後標為 `sent`；暫時性 Discord 錯誤採指數退避，
+最多五次；禁止私訊或找不到使用者直接標為 `failed`。所有失敗資料保留，且 sender 只有 DM
+介面，不持有來源 channel，因此不存在公開補發路徑。卡在 `sending` 超過五分鐘的提醒可在
+重啟後回到 `retry_wait`。
+
+`/bot status` 只讀取彙總，不讀訊息、摘要、記憶或提醒內容，也不呼叫 AI。它與管理員記憶
+功能都以 Discord owner/admin ID 驗證並採 ephemeral 回覆。
 
 預算資料分成三張表：
 

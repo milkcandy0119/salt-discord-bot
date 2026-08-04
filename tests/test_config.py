@@ -25,6 +25,10 @@ def test_defaults_are_safe_without_credentials() -> None:
     assert settings.ai_embedding_dimensions == 1_536
     assert settings.ai_history_result_limit == 3
     assert settings.background_job_interval_minutes == 5
+    assert settings.reminder_default_timezone == "Asia/Taipei"
+    assert settings.reminder_dispatch_interval_seconds == 30
+    assert settings.reminder_max_per_run == 20
+    assert settings.reminder_max_attempts == 5
     assert settings.missing_discord_settings == (
         "DISCORD_BOT_TOKEN",
         "DISCORD_ALLOWED_GUILD_IDS",

@@ -52,7 +52,7 @@ def test_phase_one_database_upgrade_preserves_existing_messages(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert message == ("階段 1 既有訊息", None)
-    assert revision == ("20260804_0005",)
+    assert revision == ("20260804_0006",)
 
 
 def test_phase_five_migration_does_not_queue_existing_archived_segments(
@@ -118,4 +118,26 @@ def test_personal_memory_migration_does_not_infer_existing_chat(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert memory_count == (0,)
-    assert revision == ("20260804_0005",)
+    assert revision == ("20260804_0006",)
+
+
+def test_reminder_migration_creates_no_default_jobs_or_private_data(
+    temporary_test_directory: Path,
+) -> None:
+    """升級只建立結構，不得擅自建立提醒、時區或稽核事件。"""
+
+    database_path = temporary_test_directory / "reminder-upgrade.sqlite3"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    upgrade_database(database_url, revision="20260804_0005")
+
+    upgrade_database(database_url)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        counts = tuple(
+            connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("reminders", "user_timezones", "admin_audit_events")
+        )
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+
+    assert counts == (0, 0, 0)
+    assert revision == ("20260804_0006",)

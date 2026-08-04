@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import pytest
@@ -5,8 +6,31 @@ import pytest
 from app.bot.memory_commands import PersonalMemoryCommandGroup
 from app.memory.personal_memory import PersonalMemoryService
 from app.security.sensitive_filter import SensitiveFilter
+from app.storage.admin_audit import AdminAuditRepository
 from app.storage.database import Database
 from app.storage.personal_memories import PersonalMemoryRepository
+
+
+@dataclass
+class FakeUser:
+    id: int
+
+
+class FakeInteractionResponse:
+    def __init__(self) -> None:
+        self.content: str | None = None
+        self.ephemeral: bool | None = None
+
+    async def send_message(self, content: str, **kwargs: object) -> None:
+        self.content = content
+        self.ephemeral = bool(kwargs.get("ephemeral"))
+
+
+class FakeInteraction:
+    def __init__(self, *, guild_id: int, user_id: int) -> None:
+        self.guild_id = guild_id
+        self.user = FakeUser(user_id)
+        self.response = FakeInteractionResponse()
 
 
 def _service(database: Database) -> tuple[PersonalMemoryRepository, PersonalMemoryService]:
@@ -140,6 +164,63 @@ def test_slash_group_has_no_target_user_parameter(database: Database) -> None:
     )
 
     commands = {command.name: command for command in group.commands}
-    assert set(commands) == {"view", "set", "delete"}
+    assert set(commands) == {"view", "set", "delete", "admin-view", "admin-set"}
     assert "user" not in {parameter.name for parameter in commands["set"].parameters}
     assert "user" not in {parameter.name for parameter in commands["delete"].parameters}
+    assert "admin-delete" not in commands
+
+
+@pytest.mark.asyncio
+async def test_only_configured_admin_can_view_and_modify_another_users_memory(
+    database: Database,
+) -> None:
+    repository, service = _service(database)
+    audit = AdminAuditRepository(database.session_factory)
+    saved = await repository.create(
+        guild_id="1",
+        user_id="20",
+        content="我擅長音樂遊戲",
+        source_type="slash",
+    )
+    group = PersonalMemoryCommandGroup(
+        service=service,
+        allowed_guild_ids=frozenset({1}),
+        admin_user_ids=frozenset({9}),
+        audit_repository=audit,
+    )
+    commands = {command.name: command for command in group.commands}
+    target = FakeUser(20)
+
+    denied = FakeInteraction(guild_id=1, user_id=8)
+    await commands["admin-view"].callback(  # type: ignore[misc]
+        group,
+        denied,  # type: ignore[arg-type]
+        target,  # type: ignore[arg-type]
+    )
+    assert denied.response.ephemeral is True
+    assert denied.response.content is not None
+    assert "沒有" in denied.response.content
+    assert await audit.count() == 0
+
+    allowed = FakeInteraction(guild_id=1, user_id=9)
+    await commands["admin-view"].callback(  # type: ignore[misc]
+        group,
+        allowed,  # type: ignore[arg-type]
+        target,  # type: ignore[arg-type]
+    )
+    assert allowed.response.ephemeral is True
+    assert allowed.response.content is not None
+    assert "我擅長音樂遊戲" in allowed.response.content
+    assert await audit.count(action="personal_memory_admin_view") == 1
+
+    modified = FakeInteraction(guild_id=1, user_id=9)
+    await commands["admin-set"].callback(  # type: ignore[misc]
+        group,
+        modified,  # type: ignore[arg-type]
+        target,  # type: ignore[arg-type]
+        saved.memory.id,
+        "我很擅長節奏遊戲",
+    )
+    target_memories = await repository.list_for_user(guild_id="1", user_id="20")
+    assert target_memories[0].content == "我很擅長節奏遊戲"
+    assert await audit.count(action="personal_memory_admin_update") == 1

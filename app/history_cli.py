@@ -26,12 +26,15 @@ from app.security.sensitive_filter import SensitiveFilter
 from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.database import Database, upgrade_database
 from app.storage.models import (
+    AdminAuditEventRecord,
     ConversationSegmentRecord,
     MessageRecord,
     PaidAiCallRecord,
     PersonalMemoryRecord,
+    ReminderRecord,
     SegmentSummaryRecord,
     SummaryEmbeddingRecord,
+    UserTimezoneRecord,
 )
 from app.storage.repositories import MessageRepository
 from app.storage.vector_store import SQLiteVectorStore
@@ -349,6 +352,25 @@ async def _run_status(settings: Settings) -> dict[str, object]:
                 )
                 or 0
             )
+            reminder_rows = (
+                await session.execute(
+                    select(ReminderRecord.status, func.count())
+                    .group_by(ReminderRecord.status)
+                    .order_by(ReminderRecord.status)
+                )
+            ).all()
+            timezone_count = int(
+                await session.scalar(
+                    select(func.count()).select_from(UserTimezoneRecord)
+                )
+                or 0
+            )
+            admin_audit_count = int(
+                await session.scalar(
+                    select(func.count()).select_from(AdminAuditEventRecord)
+                )
+                or 0
+            )
             call_rows = (
                 await session.execute(
                     select(
@@ -383,6 +405,11 @@ async def _run_status(settings: Settings) -> dict[str, object]:
             "summary_count": summary_count,
             "embedding_chunk_count": embedding_count,
             "personal_memory_count": personal_memory_count,
+            "reminder_status_counts": {
+                status: int(count) for status, count in reminder_rows
+            },
+            "user_timezone_count": timezone_count,
+            "admin_audit_event_count": admin_audit_count,
             "background_paid_call_totals": [
                 {
                     "purpose": purpose,
