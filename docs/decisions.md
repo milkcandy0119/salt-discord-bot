@@ -208,6 +208,35 @@
 - 真正的 Application Command 不會進入一般訊息事件；任何以 `/` 開頭卻被 Discord 當成
   一般文字送出的內容，只保存而不觸發聊天 AI，避免模型假裝執行尚未同步的指令。
 
+## Salt 視覺理解第一階段
+
+- 預設 `AI_VISION_ENABLED=false`，必須由管理員在環境設定中明確啟用。
+- 第一階段只接受目前 Discord 事件的靜態 PNG、JPEG、WebP 附件，以及靜態 PNG 貼圖／自訂
+  表情。Unicode Emoji 維持文字；GIF、APNG、Lottie、影片、Tenor、Giphy 與任意 URL 延後。
+- 視覺內容不得改變白名單、敏感資料、頻道模式、忽略 bot、陪伴免費判斷、冷卻、每日上限
+  或預算規則。`normal` 不因圖片自動觸發；`companion` 也只接受有限的本機視覺對話訊號。
+- 視覺 Token 算入 `FOREGROUND_CHAT` 的永久 US$10 帳本，不使用背景 US$3 額度、不建立
+  重試；預算預留必須早於下載，實際 usage 沿用現有結算流程。
+- 不新增附件資料表。永久資料只有原本文字與安全 metadata，圖片 bytes、Base64、完整或簽章
+  CDN URL 不進資料庫、日誌、例外與測試快照。
+- 圖片經 Pillow 防解壓炸彈、像素上限、單幀、格式一致性、EXIF 方向與 metadata 移除後，
+  重新編碼為 RGB JPEG。這項正規化套件以 uv 的正式 production dependency 管理。
+- 人設只控制自然回應風格；來源限制、資料處理、隱私及預算位於人設之外。OCR 與圖片內
+  敏感文字掃描列為未來工作，不宣稱第一階段已具備。
+
+## Salt 視覺理解第二階段
+
+- GIF 與 APNG 不作單張靜態圖處理；使用既有 Pillow 在本機依動畫時間軸擷取最多四張代表
+  畫面，以低解析 RGB 差異去除近似畫面，再按時間順序送入同一個 Responses user message。
+- 每則訊息最多處理一個動畫。檔案 bytes、畫布像素、動畫總像素、影格數、總時間、本機處理
+  deadline 與前景預算都具有獨立上限；任何一項超限便不送動畫畫面。
+- 動畫最多四張的最壞成本必須在 Discord CDN 下載前預留；API 回報的實際 Token 仍進永久
+  US$10 前景帳本，不使用背景 US$3、沒有隱藏重試。
+- 動畫原檔與擷取畫面只存在記憶體，不新增 migration、不寫 SQLite、向量、備份或日誌。
+- Discord GIF／APNG 貼圖與動態自訂表情沿用同一管線。Lottie 因需新增原生或瀏覽器渲染器，
+  Docker 體積與解析不受信任向量的安全風險尚未獲同意，因此維持名稱-only。
+- Tenor、Giphy、影片、任意外部 URL、歷史動畫重建及 OCR 仍不在第二階段範圍。
+
 ## 待確認
 
 以下選項仍必須在相關階段開始前確認：

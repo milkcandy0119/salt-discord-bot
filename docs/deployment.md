@@ -6,6 +6,15 @@
 Python、uv、Restic image 與 Python 套件，但不會呼叫 OpenAI。`DISCORD_BOT_TOKEN`、
 `OPENAI_API_KEY` 與 Restic 密碼都不得寫入 image 或提交 Git。
 
+視覺理解的 production dependency 已包含在 `uv.lock` 與 Docker image。正式環境仍預設
+`AI_VISION_ENABLED=false`；若要啟用，必須先確認白名單頻道的隱私告知與前景 US$10 剩餘
+預算，再修改 `.env` 並重建／重啟 bot。圖片會傳送到 OpenAI，不能把 `.env` 或 CDN 簽章
+網址貼入部署日誌。
+
+第二階段 GIF／APNG 仍只使用 Pillow，沒有新增 Lottie、Chromium 或原生渲染器，所以相較
+第一階段不增加額外 Docker 系統套件。部署時應保留動畫影格、總像素、時間長度及 3 秒處理
+上限；調高限制會同步增加容器 CPU／記憶體峰值與最多四張圖片的預算預留，不應直接解除。
+
 備份目錄若和正式資料位於同一顆 VPS 磁碟，只能防止部分人為錯誤，不能抵抗整顆磁碟或 VPS
 遺失。正式上線時應把 `BACKUP_DIRECTORY` 指向另一顆掛載磁碟，或把
 `RESTIC_REPOSITORY` 換成受控的 Restic S3 後端。

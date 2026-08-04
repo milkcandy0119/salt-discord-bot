@@ -71,9 +71,12 @@ class FakeDiscordChannel:
 @dataclass
 class FakeChatService:
     received_context: ChatContext | None = None
+    received_visual_count: int = 0
 
-    async def generate(self, context: ChatContext) -> ChatOutcome:
+    async def generate(self, context: ChatContext, **options: object) -> ChatOutcome:
         self.received_context = context
+        visual_inputs = options.get("visual_inputs", ())
+        self.received_visual_count = len(visual_inputs)  # type: ignore[arg-type]
         return ChatOutcome("generated", "安全的測試回覆")
 
 

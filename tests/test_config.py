@@ -1,5 +1,5 @@
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from app.config import Settings
 
@@ -18,6 +18,20 @@ def test_defaults_are_safe_without_credentials() -> None:
     assert settings.ai_recent_participant_context_characters == 2_000
     assert settings.ai_max_mentioned_participants == 3
     assert settings.ai_personal_memory_context_characters == 1_500
+    assert settings.ai_vision_enabled is False
+    assert settings.ai_vision_max_images_per_message == 1
+    assert settings.ai_vision_max_download_bytes == 8 * 1_024 * 1_024
+    assert settings.ai_vision_max_pixels == 20_000_000
+    assert settings.ai_vision_download_timeout_seconds == 10
+    assert settings.ai_vision_detail == "low"
+    assert settings.ai_vision_max_reserved_tokens_per_image == 1_200
+    assert settings.ai_vision_max_animations_per_message == 1
+    assert settings.ai_vision_max_frames_per_animation == 4
+    assert settings.ai_vision_max_animation_frames == 300
+    assert settings.ai_vision_max_animation_total_pixels == 80_000_000
+    assert settings.ai_vision_animation_processing_timeout_seconds == 3
+    assert settings.ai_vision_max_animation_duration_seconds == 30
+    assert settings.ai_vision_animation_duplicate_threshold == 3
     assert settings.background_ai_enabled is False
     assert settings.ai_summary_model == "gpt-5.4-nano-2026-03-17"
     assert settings.ai_summary_max_output_tokens == 300
@@ -63,6 +77,20 @@ def test_blank_secrets_are_treated_as_missing() -> None:
 
     assert settings.discord_bot_token is None
     assert settings.openai_api_key is None
+
+
+def test_animation_count_cannot_exceed_one_per_message() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, ai_vision_max_animations_per_message=2)
+
+
+def test_animation_count_accepts_string_value_from_environment() -> None:
+    settings = Settings(
+        _env_file=None,
+        ai_vision_max_animations_per_message="1",  # type: ignore[arg-type]
+    )
+
+    assert settings.ai_vision_max_animations_per_message == 1
 
 
 def test_discord_id_lists_are_parsed_without_duplicates() -> None:

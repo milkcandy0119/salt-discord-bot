@@ -40,6 +40,7 @@ from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.reminders import ReminderRepository
 from app.storage.repositories import MessageRepository, NewMessage
 from app.storage.trial import TrialRepository
+from app.vision.discord_sources import extract_discord_visuals
 from app.workers.background_worker import BackgroundWorker
 
 LOGGER = logging.getLogger(__name__)
@@ -430,6 +431,7 @@ class DiscordAssistantClient(discord.Client):
         if message.reference is not None and message.reference.message_id is not None:
             replied_to_message_id = str(message.reference.message_id)
 
+        visual_inputs = extract_discord_visuals(message)
         incoming = IncomingMessage(
             discord_message_id=str(message.id),
             guild_id=message.guild.id if message.guild is not None else None,
@@ -446,6 +448,7 @@ class DiscordAssistantClient(discord.Client):
                 for sticker in getattr(message, "stickers", ())
                 if isinstance(getattr(sticker, "name", None), str)
             ),
+            visual_inputs=visual_inputs,
         )
         try:
             outcome = await self._message_handler.handle(incoming)
@@ -576,6 +579,10 @@ class DiscordAssistantClient(discord.Client):
             mentioned_bot=any(user.id == self.user.id for user in message.mentions),
             replied_to_bot=await self._is_reply_to_this_bot(message, incoming),
             is_command=self._is_ai_command(incoming.content),
+            has_visual=(
+                self._settings.ai_vision_enabled
+                and incoming.has_processable_visual_candidate
+            ),
             now=datetime.now(UTC),
         )
         explicit_decision = self._trigger_policy.decide(
@@ -667,6 +674,10 @@ class DiscordAssistantClient(discord.Client):
             ReplySignals(
                 channel_id=incoming.channel_id,
                 content=incoming.content,
+                has_visual=(
+                    self._settings.ai_vision_enabled
+                    and incoming.has_processable_visual_candidate
+                ),
                 recent_human_author_ids=human_ids,
                 bot_spoke_recently=bot_spoke_recently,
                 last_companion_reply_at=self._last_companion_reply_at.get(
@@ -741,7 +752,11 @@ class DiscordAssistantClient(discord.Client):
                 summaries,
                 maximum_characters=self._settings.ai_history_context_characters,
             )
-        outcome = await self._chat_service.generate(context)
+        outcome = await self._chat_service.generate(
+            context,
+            visual_inputs=incoming.visual_inputs,
+            trigger_has_text=incoming.has_meaningful_text,
+        )
         outgoing_content = self._fit_discord_message(outcome.content)
         delivery_mode = "reply" if reply_to_message else "channel"
         try:

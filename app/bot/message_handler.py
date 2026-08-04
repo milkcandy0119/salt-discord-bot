@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
 from app.security.sensitive_filter import SensitiveFilter
 from app.storage.repositories import MessageRepository, NewMessage
+from app.vision.models import IncomingVisual, VisualMediaKind
 
 LOGGER = logging.getLogger(__name__)
+_DISCORD_VISUAL_MARKUP = re.compile(
+    r"<@!?\d+>|<a?:[A-Za-z0-9_]{2,32}:\d+>"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,25 +33,69 @@ class IncomingMessage:
     author_is_bot: bool
     is_own_message: bool
     sticker_names: tuple[str, ...] = ()
+    visual_inputs: tuple[IncomingVisual, ...] = ()
+
+    @property
+    def has_static_visual_candidate(self) -> bool:
+        """指出目前事件是否含可直接處理的靜態視覺資源。"""
+
+        return any(item.is_static_candidate for item in self.visual_inputs)
+
+    @property
+    def has_processable_visual_candidate(self) -> bool:
+        """包含靜態圖片，以及可在本機取樣的 GIF／APNG。"""
+
+        return any(item.is_processable_candidate for item in self.visual_inputs)
+
+    @property
+    def has_meaningful_text(self) -> bool:
+        """排除只有機器人提及或自訂表情語法的訊息。"""
+
+        return bool(_DISCORD_VISUAL_MARKUP.sub("", self.content).strip())
 
 
-def compose_stored_content(content: str, sticker_names: tuple[str, ...]) -> str:
-    """將貼圖名稱加入保存內容，但不把名稱當成使用者文字觸發訊號。"""
+def compose_stored_content(
+    content: str,
+    sticker_names: tuple[str, ...],
+    visual_inputs: tuple[IncomingVisual, ...] = (),
+) -> str:
+    """加入安全視覺 metadata；來源網址與圖片內容永不寫入資料庫。"""
 
     normalized_names: list[str] = []
     for name in sticker_names:
         normalized = " ".join(name.split())[:100]
         if normalized and normalized not in normalized_names:
             normalized_names.append(normalized)
-    if not normalized_names:
+    metadata_lines = [
+        f"[Discord 貼圖名稱：{name}]" for name in normalized_names
+    ]
+    seen_resources: set[tuple[VisualMediaKind, str]] = set()
+    for visual in visual_inputs:
+        resource_key = (visual.media_kind, visual.resource_id)
+        if resource_key in seen_resources:
+            continue
+        seen_resources.add(resource_key)
+        filename = " ".join(visual.filename.split())[:150]
+        display_name = " ".join((visual.display_name or "").split())[:100]
+        content_type = (visual.declared_content_type or "unknown")[:100]
+        size = str(visual.declared_size) if visual.declared_size is not None else "unknown"
+        animation = "possible" if visual.possibly_animated else "static_candidate"
+        animation_format = visual.animation_format or "none"
+        if visual.media_kind is VisualMediaKind.CUSTOM_EMOJI and display_name:
+            metadata_lines.append(f"[Discord 自訂表情名稱：{display_name}]")
+        metadata_lines.append(
+            "[Discord 視覺資源："
+            f"kind={visual.media_kind.value} id={visual.resource_id[:30]} "
+            f"filename={filename} content_type={content_type} size={size} "
+            f"animation={animation} animation_format={animation_format}]"
+        )
+    if not metadata_lines:
         return content
 
-    sticker_lines = "\n".join(
-        f"[Discord 貼圖名稱：{name}]" for name in normalized_names
-    )
+    metadata = "\n".join(metadata_lines)
     if content.strip():
-        return f"{content}\n{sticker_lines}"
-    return sticker_lines
+        return f"{content}\n{metadata}"
+    return metadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +162,11 @@ class MessageHandler:
         if message.is_own_message:
             return HandlingOutcome("ignored_own_message")
 
-        stored_content = compose_stored_content(message.content, message.sticker_names)
+        stored_content = compose_stored_content(
+            message.content,
+            message.sticker_names,
+            message.visual_inputs,
+        )
         content_scan = self._sensitive_filter.scan(stored_content)
         display_name_scan = self._sensitive_filter.scan(message.author_display_name or "")
         categories = tuple(

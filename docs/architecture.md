@@ -231,15 +231,53 @@ Context Builder 只載入觸發訊息作者在相同 guild 的記憶，最多 20
 2. 優先加入明確回覆鏈，再暫時補入同頻道最近 5 分鐘內，發言者本人及明確被提及成員的
    近期非敏感訊息，最後補目前段落其他近期訊息，合計最多 12,000 字元。跨段落補充每位
    最多 4 則、合計最多 2,000 字元且不永久合併段落。
-3. 以 UTF-8 位元組數加結構餘裕保守估算輸入 Token，向 `BudgetManager` 預留最大輸入及
-   800 個輸出 Token 的費用。
-4. 透過官方非同步 SDK 呼叫 Responses API，使用 `gpt-5.6-luna`、低推理強度、`store=False`
+3. 以 UTF-8 位元組數加結構餘裕保守估算輸入 Token；若視覺功能已啟用且目前觸發訊息有
+   合格候選，再加入每張圖片的保守 Token 上界，向 `BudgetManager` 預留最大輸入及 800 個
+   輸出 Token 的費用。預留成功前不得下載圖片。
+4. 視覺候選通過 Discord CDN、大小、格式、像素與動畫檢查後，只附加到目前觸發的 user
+   message；歷史訊息與摘要維持純文字。接著透過官方非同步 SDK 呼叫 Responses API，使用
+   `gpt-5.6-luna`、低推理強度、`store=False`
    且不提供工具。提示快取採 explicit 模式且不設定快取斷點，避免產生 1.25 倍價格的自動
    cache write；SDK 自動重試也保持停用，避免回應遺失時隱藏重送造成重複計費。
 5. 有完整用量便依實際 Token 結算；連線／API 錯誤或缺少用量時保留預留並標成
    `usage_uncertain`，只有確定請求未送出才釋放。
 6. 模型輸出再次接受敏感掃描，並停用 Discord mentions；傳送成功後保存機器人訊息及其
    `replied_to_message_id`，再加入觸發訊息所屬段落。
+
+## Salt 視覺理解第一階段
+
+- `app.vision.discord_sources` 只把目前 Discord 訊息事件中的圖片附件、貼圖與自訂表情轉成
+  `IncomingVisual`。Unicode Emoji 不會成為視覺候選；一般 URL、Tenor 與 Giphy 不會進入
+  下載器。
+- `app.vision.service` 只允許 HTTPS 的 `cdn.discordapp.com`／`media.discordapp.net`，驗證
+  路徑必須符合 attachment、sticker 或 emoji 類型且包含事件資源 ID；不跟隨重新導向。
+- `VisionService` 在串流下載時限制 bytes，使用 Pillow 驗證 PNG、JPEG、WebP 的實際格式、
+  尺寸與單幀狀態，攔截 decompression bomb，校正 EXIF 方向、轉 RGB、縮圖並重新編碼 JPEG。
+- 正規化 data URL 只存在於 `ProviderInputMessage.images` 的單次呼叫；上下文字元統計、敏感
+  掃描、資料庫、日誌及例外都不接收 Base64。
+- 資料庫沿用 `messages.content` 保存原本文字與安全視覺 metadata，不新增附件表或 binary
+  欄位。這讓第一階段無須 migration，但目前不能單獨查詢附件，也不能重建或重新分析舊圖。
+- 檔名、作者名稱與文字會接受既有敏感規則；圖片像素內的文字目前不可見，因此系統不宣稱
+  已掃描圖片內祕密，也不執行 OCR。
+- 圖片準備失敗不會撤銷已保存訊息；沒有可用文字時會在 API 請求送出前釋放預留並回固定
+  文字。有文字時可降級為純文字呼叫，模型不會收到失敗圖片。
+
+## Salt 視覺理解第二階段
+
+- `IncomingVisual.animation_format` 區分 GIF、APNG 與 Lottie。一般 PNG 附件可能其實是 APNG，
+  因此會在下載前按最壞四張畫面預留，下載後若確認為靜態 PNG，仍只輸出一張靜態圖片。
+- 單則訊息會優先選擇第一個明確 GIF／APNG；若只有一般 PNG，再把第一張當作可能 APNG。
+  其餘動畫只保存 metadata，不下載，確保每則訊息最多處理一個動畫。
+- 動畫解碼前驗證來源與檔案大小；開檔後驗證實際格式、單畫布像素、總影格數、
+  `畫布像素 × 影格數`、總時間及本機處理 deadline。實際解碼仍使用 Pillow，不增加渲染器。
+- 代表畫面候選依累積 frame duration 均勻分布在整段時間軸，最多檢查擷取上限四倍的候選；
+  16×16 RGB 平均絕對差小於門檻的畫面會去重，最後最多輸出四張 RGB JPEG。
+- `PreparedImage` 只在記憶體保存順序、總數、約略毫秒與動畫格式。Responses 複合 user message
+  在每張圖片前插入安全的順序標籤，並明示這些畫面屬於同一動畫。
+- 預算上界按最大可能輸出畫面數計入 `FOREGROUND_CHAT`，仍早於下載。實際 API usage 沿用
+  同一結算，沒有動畫背景工作或重試。
+- Lottie 貼圖只保存名稱及安全 metadata，不下載或渲染。未來若加入 rlottie／Cairo 或
+  Chromium 類渲染器，必須先評估 Docker 體積、原生套件、CPU／記憶體耗盡與解析器攻擊面。
 
 ## 安全邊界
 
@@ -253,7 +291,7 @@ Context Builder 只載入觸發訊息作者在相同 guild 的記憶，最多 20
 ## 目前限制
 
 - 敏感偵測是規則式工具，仍可能誤判或漏判；保守方案因此不自動刪除訊息。
-- 只掃描文字內容及作者顯示名稱，尚未下載或掃描附件內容。
+- 只掃描文字、檔名 metadata 與作者顯示名稱；不掃描圖片像素內文字，也不執行 OCR。
 - 敏感通知仍使用自己的狀態重試；階段 5 背景佇列只處理摘要與向量化。
 - 近期參與者補充只處理同頻道最近 5 分鐘的明確作者／mention，不是全域長期記憶，也不會
   搜尋沒有被提及的其他成員或其他頻道。

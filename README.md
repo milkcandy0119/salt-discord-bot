@@ -112,7 +112,10 @@ Commands；它們只允許在伺服器內使用，不開放私訊：
   判斷「該不該回覆」。
 - 頻道以 Discord channel ID 設定；人設獨立且有版本，只能影響表達方式，不能覆蓋安全、
   權限、隱私與預算限制。
-- Discord 貼圖只保存名稱作為文字中繼資料，不下載或分析圖片；單獨貼圖不會觸發 AI。
+- 視覺理解預設關閉。管理員明確設定 `AI_VISION_ENABLED=true` 後，只有已通過原有回覆觸發、
+  安全檢查與前景預算預留的目前訊息，才可能處理靜態 Discord 圖片，或從一個 GIF／APNG
+  動畫擷取最多四張代表畫面。Unicode Emoji 仍是文字；Lottie 只讀名稱，影片與一般外部
+  網址不處理。
 - 模型輸出會移除重複的 Salt／ソルト說話者前綴，避免和 Discord 顯示名稱重複；人設允許
   偶爾使用一次簡短動作描寫，但不得讓每則訊息都變成角色扮演小說。
 
@@ -125,6 +128,59 @@ AI 使用官方 OpenAI Responses API，預設聊天模型為 `gpt-5.6-luna`、�
 
 沒有 `OPENAI_API_KEY` 或額度不足時，每次明確觸發只會回覆固定維護訊息。設定金鑰後，通過
 觸發、安全檢查及預算預留的訊息會產生真實付費 API 呼叫。
+
+### Salt 視覺理解第一階段
+
+圖片下載只允許目前 Discord 事件提供或可由事件中的自訂表情 ID 建立的 Discord CDN 資源，
+不接受 Tenor、Giphy 或聊天中的任意網址。下載前後都會檢查數量、宣告大小、實際格式、像素、
+動畫狀態與逾時；合格圖片會移除 EXIF、校正方向、轉為 RGB 並縮小。原始位元組與 Base64
+只存在單次處理記憶體，不寫入 SQLite、日誌、錯誤訊息或歷史向量。
+
+資料庫只保存原本文字以及安全 metadata（資源種類、Discord 資源 ID、檔名、Content-Type、
+大小與可能動畫狀態）。檔名與文字會先經既有敏感規則；目前不做 OCR，所以敏感檢查不能看到
+圖片內文字。視覺費用屬於前景 US$10 帳本，會在下載前保守加入每張圖片 Token 預留，並依
+Responses API 實際 usage 結算；預算不足時不下載圖片。
+
+保守啟用範例：
+
+```env
+AI_VISION_ENABLED=true
+AI_VISION_MAX_IMAGES_PER_MESSAGE=1
+AI_VISION_MAX_DOWNLOAD_BYTES=8388608
+AI_VISION_MAX_PIXELS=20000000
+AI_VISION_DOWNLOAD_TIMEOUT_SECONDS=10
+AI_VISION_DETAIL=low
+AI_VISION_MAX_RESERVED_TOKENS_PER_IMAGE=1200
+AI_VISION_MAX_DIMENSION=1536
+AI_VISION_MAX_ANIMATIONS_PER_MESSAGE=1
+AI_VISION_MAX_FRAMES_PER_ANIMATION=4
+AI_VISION_MAX_ANIMATION_FRAMES=300
+AI_VISION_MAX_ANIMATION_TOTAL_PIXELS=80000000
+AI_VISION_ANIMATION_PROCESSING_TIMEOUT_SECONDS=3
+AI_VISION_MAX_ANIMATION_DURATION_SECONDS=30
+AI_VISION_ANIMATION_DUPLICATE_THRESHOLD=3
+```
+
+`normal` 頻道仍必須提及、回覆或使用既有指令；圖片不會繞過觸發。`companion` 只在「你看」
+等免費視覺對話訊號或機器人最近已參與時，把圖片當候選，仍受 5 秒觀察、多人成員、冷卻、
+每日上限與預算規則限制，因此不會每張圖都呼叫 AI。圖片打不開且沒有可繼續處理的文字時，
+只回固定文字，不呼叫模型。
+
+### Salt 視覺理解第二階段
+
+GIF、APNG、Discord GIF 貼圖、Discord APNG 貼圖與動態自訂表情會在本機由 Pillow 解碼，
+不會把動畫原檔直接當成單張圖片傳送。系統先沿整段動畫時間軸均勻選擇候選時間點，再以
+縮小 RGB 畫面的平均差異去除幾乎相同的畫面，最多留下四張，按時間順序傳入 Responses API。
+每張都附有順序及約略毫秒，模型也會收到「這些是同一動畫的連續代表畫面」說明。
+
+每則訊息最多下載及處理一個動畫。檔案仍受 8 MiB 限制，另有單一畫布像素、動畫總像素、
+最多 300 影格、30 秒動畫長度及 3 秒本機處理上限。預算下載前會以最多四張圖片保守預留，
+成功後仍依 API 實際 usage 結算。動畫原檔、解碼影格及擷取畫面不寫入磁碟或資料庫。
+
+Lottie 暫不下載或渲染，只保存貼圖名稱及 metadata。加入 Lottie 需額外原生 rlottie／Cairo
+或 Node／Chromium 渲染器，會增加 Docker image、建置複雜度及不受信任向量動畫的 CPU、
+記憶體與解析器攻擊面，因此必須另外評估並取得同意。Tenor、Giphy 與任意外部 URL 仍不在
+範圍內。
 
 ## 階段 5 背景記憶
 

@@ -34,6 +34,7 @@ class ReplySignals:
     mentioned_bot: bool = False
     replied_to_bot: bool = False
     is_command: bool = False
+    has_visual: bool = False
     recent_human_author_ids: frozenset[int] = frozenset()
     bot_spoke_recently: bool = False
     last_companion_reply_at: datetime | None = None
@@ -79,6 +80,9 @@ class ReplyTriggerPolicy:
     _QUESTION_PATTERN = re.compile(
         r"[?？]|(?:請問|怎麼|如何|為什麼|哪裡|哪個|是否|能不能|可不可以|幫我|需要建議)"
     )
+    _VISUAL_ENGAGEMENT_PATTERN = re.compile(
+        r"(?:你看|看看|看這個|看這張|這張|這是什麼|好看嗎|覺得如何)"
+    )
 
     def __init__(self, *, companion_cooldown: timedelta) -> None:
         if companion_cooldown < timedelta(0):
@@ -99,7 +103,7 @@ class ReplyTriggerPolicy:
             return TriggerDecision(False, TriggerKind.NONE, "normal_requires_explicit_trigger")
 
         content = signals.content.strip()
-        if not content:
+        if not content and not signals.has_visual:
             return TriggerDecision(False, TriggerKind.NONE, "empty_content")
         if self._is_in_cooldown(signals):
             return TriggerDecision(False, TriggerKind.NONE, "companion_cooldown")
@@ -107,6 +111,10 @@ class ReplyTriggerPolicy:
             return TriggerDecision(False, TriggerKind.NONE, "multiple_humans_talking")
         if self._QUESTION_PATTERN.search(content):
             return TriggerDecision(True, TriggerKind.COMPANION, "question_or_help_request")
+        if signals.has_visual and (
+            signals.bot_spoke_recently or self._VISUAL_ENGAGEMENT_PATTERN.search(content)
+        ):
+            return TriggerDecision(True, TriggerKind.COMPANION, "visual_conversation_signal")
         if signals.bot_spoke_recently and len(content) >= 2:
             return TriggerDecision(True, TriggerKind.COMPANION, "recent_bot_continuation")
         return TriggerDecision(False, TriggerKind.NONE, "no_companion_signal")

@@ -28,6 +28,7 @@ from app.storage.reminders import ReminderRepository
 from app.storage.repositories import MessageRepository
 from app.storage.trial import TrialRepository
 from app.storage.vector_store import SQLiteVectorStore
+from app.vision.service import VisionService
 from app.workers.background_worker import BackgroundWorker
 
 LOGGER = logging.getLogger(__name__)
@@ -107,6 +108,41 @@ async def run_discord(settings: Settings) -> int:
         maintenance_message=settings.ai_maintenance_message,
         maximum_output_tokens=settings.ai_chat_max_output_tokens,
         reasoning_effort=settings.ai_chat_reasoning_effort,
+        vision_service=VisionService(
+            enabled=settings.ai_vision_enabled,
+            maximum_images_per_message=(
+                settings.ai_vision_max_images_per_message
+            ),
+            maximum_download_bytes=settings.ai_vision_max_download_bytes,
+            maximum_pixels=settings.ai_vision_max_pixels,
+            download_timeout_seconds=(
+                settings.ai_vision_download_timeout_seconds
+            ),
+            detail=settings.ai_vision_detail,
+            maximum_dimension=settings.ai_vision_max_dimension,
+            maximum_animations_per_message=(
+                settings.ai_vision_max_animations_per_message
+            ),
+            maximum_frames_per_animation=(
+                settings.ai_vision_max_frames_per_animation
+            ),
+            maximum_animation_frames=settings.ai_vision_max_animation_frames,
+            maximum_animation_total_pixels=(
+                settings.ai_vision_max_animation_total_pixels
+            ),
+            animation_processing_timeout_seconds=(
+                settings.ai_vision_animation_processing_timeout_seconds
+            ),
+            maximum_animation_duration_seconds=(
+                settings.ai_vision_max_animation_duration_seconds
+            ),
+            animation_duplicate_threshold=(
+                settings.ai_vision_animation_duplicate_threshold
+            ),
+        ),
+        maximum_reserved_tokens_per_image=(
+            settings.ai_vision_max_reserved_tokens_per_image
+        ),
     )
     context_builder = ContextBuilder(
         database.session_factory,

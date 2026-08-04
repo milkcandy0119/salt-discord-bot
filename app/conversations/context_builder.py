@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Literal
 
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.storage.models import MessageRecord
 from app.storage.personal_memories import PersonalMemory, PersonalMemoryRepository
 from app.storage.vector_store import HistoricalSummary
+from app.vision.models import PreparedImage
 
 _DISCORD_USER_MENTION_PATTERN = re.compile(r"<@!?(\d+)>")
 _OWNER_REFERENCE_PATTERN = re.compile(
@@ -23,11 +24,12 @@ _OWNER_REFERENCE_PATTERN = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class ProviderInputMessage:
-    """可直接轉換成文字生成介面輸入的單一訊息。"""
+    """可直接轉換成文字或複合生成介面輸入的單一訊息。"""
 
     role: Literal["user", "assistant"]
     content: str
     discord_message_id: str
+    images: tuple[PreparedImage, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,21 @@ class ChatContext:
     trigger_message_id: str
     messages: tuple[ProviderInputMessage, ...]
     character_count: int
+
+    def with_trigger_images(self, images: tuple[PreparedImage, ...]) -> ChatContext:
+        """只在本次觸發訊息附加圖片，歷史訊息一律維持純文字。"""
+
+        found = False
+        updated: list[ProviderInputMessage] = []
+        for message in self.messages:
+            if message.discord_message_id == self.trigger_message_id:
+                updated.append(replace(message, images=images))
+                found = True
+            else:
+                updated.append(message)
+        if not found:
+            raise LookupError("聊天上下文找不到觸發訊息")
+        return replace(self, messages=tuple(updated))
 
 
 class ContextBuilder:

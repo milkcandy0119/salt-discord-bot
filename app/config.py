@@ -64,6 +64,45 @@ class Settings(BaseSettings):
     ai_chat_max_output_tokens: int = Field(default=800, ge=1, le=16_000)
     ai_chat_reasoning_effort: Literal["none", "low", "medium"] = "low"
     ai_maintenance_message: str = "目前 AI 回覆暫時無法使用，請稍後再試。"
+    ai_vision_enabled: bool = False
+    ai_vision_max_images_per_message: int = Field(default=1, ge=1, le=4)
+    ai_vision_max_download_bytes: int = Field(
+        default=8 * 1_024 * 1_024,
+        ge=1_024,
+        le=25 * 1_024 * 1_024,
+    )
+    ai_vision_max_pixels: int = Field(default=20_000_000, ge=1, le=100_000_000)
+    ai_vision_download_timeout_seconds: float = Field(default=10.0, gt=0, le=30)
+    ai_vision_detail: Literal["low", "auto"] = "low"
+    ai_vision_max_reserved_tokens_per_image: int = Field(
+        default=1_200,
+        ge=1,
+        le=20_000,
+    )
+    ai_vision_max_dimension: int = Field(default=1_536, ge=128, le=4_096)
+    ai_vision_max_animations_per_message: int = Field(default=1, ge=1, le=1)
+    ai_vision_max_frames_per_animation: int = Field(default=4, ge=1, le=8)
+    ai_vision_max_animation_frames: int = Field(default=300, ge=8, le=1_000)
+    ai_vision_max_animation_total_pixels: int = Field(
+        default=80_000_000,
+        ge=1,
+        le=500_000_000,
+    )
+    ai_vision_animation_processing_timeout_seconds: float = Field(
+        default=3.0,
+        gt=0,
+        le=15,
+    )
+    ai_vision_max_animation_duration_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=300,
+    )
+    ai_vision_animation_duplicate_threshold: float = Field(
+        default=3.0,
+        ge=0,
+        le=255,
+    )
     background_ai_enabled: bool = False
     ai_summary_model: str = "gpt-5.4-nano-2026-03-17"
     ai_summary_price_version: str = "openai-2026-08-04"
