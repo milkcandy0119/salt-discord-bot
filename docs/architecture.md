@@ -7,7 +7,8 @@
 以及預設停用的背景摘要與同頻道向量檢索。
 程式在沒有 Discord 設定時仍以安全模式啟動；設定完整時才啟動 Discord.py 用戶端。
 
-目前仍不包含提醒或部署。沒有 OpenAI 金鑰時只回固定維護訊息；設定金鑰後，
+目前已包含提醒、管理命令、階段 8 容器部署，以及預設未啟動的階段 9 試跑觀測。沒有 OpenAI
+金鑰時只回固定維護訊息；設定金鑰後，
 符合觸發條件的訊息可能產生受預算帳本限制的付費呼叫。
 
 ## 訊息處理順序
@@ -41,6 +42,11 @@
 - `app.memory.personal_memory`：免費明確事件擷取及共用個人記憶安全規則。
 - `app.bot.memory_commands`：只能操作 Interaction 目前使用者記憶的私密 Slash Commands。
 - `app.reminders.service`／`dispatcher`：嚴格時區換算及可重啟恢復的免費提醒派送。
+- `app.health`／`healthcheck`：只在 Discord ready 時更新心跳，並以唯讀方式檢查 SQLite。
+- `app.backup.service`：SQLite Online Backup API、Restic 配接、驗證標記與安全輪替。
+- `app.backup_cli`：明確初始化、每日 UTC 排程、驗證與隔離還原入口。
+- `app.storage.trial`：不可重設試跑基準、每日 companion 名額、內容最小化事件及彙總。
+- `app.trial_cli`／`app.bot.trial_commands`：本機生命週期及固定管理員 ID 的私密評價入口。
 - `app.bot.reminder_commands`／`admin_commands`：本人提醒與固定管理員 ID 的私密狀態查詢。
 - `app.security.sensitive_filter`：完全在本機執行的確定性敏感資料規則。
 - `app.security.access_policy`：擁有者與管理員的敏感事件查閱權限。

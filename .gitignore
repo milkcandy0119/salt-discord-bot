@@ -10,3 +10,7 @@ __pycache__/
 .coverage
 htmlcov/
 data/
+runtime/
+backups/
+restore/
+secrets/

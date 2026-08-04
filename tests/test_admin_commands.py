@@ -8,6 +8,7 @@ from app.storage.admin_audit import AdminAuditRepository
 from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.database import Database
 from app.storage.reminders import ReminderRepository
+from app.storage.trial import TrialRepository
 
 
 @dataclass
@@ -53,6 +54,7 @@ async def test_bot_status_is_private_and_restricted_to_configured_admins(
         audit_repository=audit,
         allowed_guild_ids=frozenset({1}),
         admin_user_ids=frozenset({9}),
+        trial_repository=TrialRepository(database.session_factory),
     )
     command = next(command for command in group.commands if command.name == "status")
 
@@ -70,3 +72,17 @@ async def test_bot_status_is_private_and_restricted_to_configured_admins(
     assert "Discord 延遲：約 125 ms" in allowed.response.content
     assert "提醒：{}" in allowed.response.content
     assert await audit.count(action="bot_status_view") == 1
+
+    trial_command = next(
+        command for command in group.commands if command.name == "trial-status"
+    )
+    denied_trial = FakeInteraction(guild_id=1, user_id=8)
+    await trial_command.callback(group, denied_trial)  # type: ignore[misc, arg-type]
+    assert denied_trial.response.content == "你沒有查看試跑狀態的權限"
+    assert await audit.count(action="trial_status_view") == 0
+
+    allowed_trial = FakeInteraction(guild_id=1, user_id=9)
+    await trial_command.callback(group, allowed_trial)  # type: ignore[misc, arg-type]
+    assert allowed_trial.response.content == "階段 9 試跑尚未開始"
+    assert allowed_trial.response.ephemeral is True
+    assert await audit.count(action="trial_status_view") == 1

@@ -1,0 +1,57 @@
+name: discord-assistant
+
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: discord-assistant:local
+  user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
+  env_file:
+    - .env
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m
+
+services:
+  bot:
+    <<: *common
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      DATABASE_URL: sqlite+aiosqlite:////app/data/discord_assistant.db
+      HEALTH_HEARTBEAT_PATH: /app/runtime/discord-assistant.heartbeat
+    volumes:
+      - "${APP_DATA_DIRECTORY:-./data}:/app/data"
+      - "${APP_RUNTIME_DIRECTORY:-./runtime}:/app/runtime"
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  backup:
+    <<: *common
+    restart: unless-stopped
+    command: ["python", "-m", "app.backup_cli", "schedule"]
+    environment:
+      APP_ENV: production
+      DATABASE_URL: sqlite+aiosqlite:////app/data/discord_assistant.db
+      RESTIC_REPOSITORY: "${RESTIC_REPOSITORY:-/backups/restic}"
+      RESTIC_PASSWORD_FILE: /run/secrets/restic_password
+      RESTIC_CACHE_DIR: /tmp/restic-cache
+      BACKUP_DAILY_TIME_UTC: "${BACKUP_DAILY_TIME_UTC:-19:00}"
+      BACKUP_KEEP_LAST: "${BACKUP_KEEP_LAST:-7}"
+    volumes:
+      - "${APP_DATA_DIRECTORY:-./data}:/app/data:ro"
+      - "${BACKUP_DIRECTORY:-./backups}:/backups"
+    secrets:
+      - restic_password
+
+secrets:
+  restic_password:
+    file: "${BACKUP_SECRET_FILE:-./secrets/restic_password.txt}"

@@ -9,6 +9,7 @@ from app.ai.budget_manager import BudgetManager
 from app.storage.admin_audit import AdminAuditRepository
 from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.reminders import ReminderRepository
+from app.storage.trial import TrialRepository
 
 
 class BotAdminCommandGroup(app_commands.Group):
@@ -24,6 +25,7 @@ class BotAdminCommandGroup(app_commands.Group):
         audit_repository: AdminAuditRepository,
         allowed_guild_ids: frozenset[int],
         admin_user_ids: frozenset[int],
+        trial_repository: TrialRepository,
     ) -> None:
         super().__init__(name="bot", description="Discord 助手管理狀態")
         self._client = client
@@ -33,6 +35,7 @@ class BotAdminCommandGroup(app_commands.Group):
         self._audit_repository = audit_repository
         self._allowed_guild_ids = allowed_guild_ids
         self._admin_user_ids = admin_user_ids
+        self._trial_repository = trial_repository
 
     @app_commands.command(name="status", description="私密查看健康、用量與佇列狀態")
     async def status(self, interaction: discord.Interaction) -> None:
@@ -70,6 +73,46 @@ class BotAdminCommandGroup(app_commands.Group):
                     f"背景工作：{background_jobs}",
                     f"提醒：{reminders}",
                     f"70%／90% 通知：{notifications}",
+                )
+            ),
+        )
+
+    @app_commands.command(name="trial-status", description="私密查看階段 9 試跑彙總")
+    async def trial_status(self, interaction: discord.Interaction) -> None:
+        """只顯示試跑期間、額度、事件與固定評價彙總。"""
+
+        if (
+            interaction.guild_id is None
+            or interaction.guild_id not in self._allowed_guild_ids
+            or interaction.user.id not in self._admin_user_ids
+        ):
+            await self._respond(interaction, "你沒有查看試跑狀態的權限")
+            return
+        report = await self._trial_repository.report()
+        await self._audit_repository.record(
+            guild_id=str(interaction.guild_id),
+            actor_user_id=str(interaction.user.id),
+            action="trial_status_view",
+        )
+        if report.get("status") == "not_started":
+            await self._respond(interaction, "階段 9 試跑尚未開始")
+            return
+        await self._respond(
+            interaction,
+            "\n".join(
+                (
+                    f"狀態：{report['status']}",
+                    f"開始：{report['started_at']}",
+                    f"結束：{report['ends_at']}",
+                    "增量額度："
+                    f"{report['global_increment_microusd']}／"
+                    f"{report['global_increment_limit_microusd']} μUSD",
+                    "背景增量額度："
+                    f"{report['background_increment_microusd']}／"
+                    f"{report['background_increment_limit_microusd']} μUSD",
+                    f"companion 每日次數：{report['companion_daily_counts']}",
+                    f"固定評價：{report['feedback_counts']}",
+                    f"回覆延遲：{report['reply_latency_ms']}",
                 )
             ),
         )

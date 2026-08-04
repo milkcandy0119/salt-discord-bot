@@ -17,6 +17,7 @@ from app.storage.models import (
     BudgetStateRecord,
     BudgetThresholdNotificationRecord,
     PaidAiCallRecord,
+    TrialSessionRecord,
 )
 
 MICROUSD_PER_USD = 1_000_000
@@ -171,6 +172,21 @@ class BudgetManager:
         now = datetime.now(UTC)
         background = purpose.is_background
         async with self._session_factory() as session, session.begin():
+            trial = await session.scalar(
+                select(TrialSessionRecord)
+                .order_by(TrialSessionRecord.id.desc())
+                .limit(1)
+            )
+            if trial is not None:
+                trial_ends_at = (
+                    trial.ends_at.replace(tzinfo=UTC)
+                    if trial.ends_at.tzinfo is None
+                    else trial.ends_at.astimezone(UTC)
+                )
+                if trial.status != "active":
+                    raise BudgetExceededError("trial_inactive")
+                if now >= trial_ends_at:
+                    raise BudgetExceededError("trial_ended")
             conditions = [
                 BudgetStateRecord.id == 1,
                 BudgetStateRecord.global_spent_microusd
@@ -178,6 +194,14 @@ class BudgetManager:
                 + estimated_cost
                 <= GLOBAL_LIMIT_MICROUSD,
             ]
+            if trial is not None:
+                conditions.append(
+                    BudgetStateRecord.global_spent_microusd
+                    + BudgetStateRecord.global_reserved_microusd
+                    + estimated_cost
+                    <= trial.baseline_global_committed_microusd
+                    + trial.global_increment_limit_microusd
+                )
             values: dict[str, object] = {
                 "global_reserved_microusd": (
                     BudgetStateRecord.global_reserved_microusd + estimated_cost
@@ -194,6 +218,14 @@ class BudgetManager:
                 values["background_reserved_microusd"] = (
                     BudgetStateRecord.background_reserved_microusd + estimated_cost
                 )
+                if trial is not None:
+                    conditions.append(
+                        BudgetStateRecord.background_spent_microusd
+                        + BudgetStateRecord.background_reserved_microusd
+                        + estimated_cost
+                        <= trial.baseline_background_committed_microusd
+                        + trial.background_increment_limit_microusd
+                    )
 
             result = await session.execute(
                 update(BudgetStateRecord).where(*conditions).values(**values)
@@ -210,6 +242,25 @@ class BudgetManager:
                     > BACKGROUND_LIMIT_MICROUSD
                 ):
                     raise BudgetExceededError("background")
+                if (
+                    trial is not None
+                    and background
+                    and state.background_spent_microusd
+                    + state.background_reserved_microusd
+                    + estimated_cost
+                    > trial.baseline_background_committed_microusd
+                    + trial.background_increment_limit_microusd
+                ):
+                    raise BudgetExceededError("trial_background")
+                if (
+                    trial is not None
+                    and state.global_spent_microusd
+                    + state.global_reserved_microusd
+                    + estimated_cost
+                    > trial.baseline_global_committed_microusd
+                    + trial.global_increment_limit_microusd
+                ):
+                    raise BudgetExceededError("trial_global")
                 raise BudgetExceededError("global")
 
             session.add(

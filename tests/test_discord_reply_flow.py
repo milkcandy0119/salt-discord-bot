@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -13,6 +13,7 @@ from app.conversations.segmenter import ConversationSegmenter
 from app.memory.personal_memory import MemoryCaptureOutcome
 from app.storage.database import Database
 from app.storage.repositories import MessageRepository, NewMessage
+from app.storage.trial import TrialRepository
 
 
 @dataclass
@@ -113,6 +114,18 @@ async def test_successful_discord_reply_is_saved_with_reply_relationship(
     )
     await segmenter.assign_message("100")
     chat_service = FakeChatService()
+    trial_repository = TrialRepository(database.session_factory)
+    await trial_repository.start(
+        guild_ids=frozenset({1}),
+        channel_ids=frozenset({2}),
+        companion_channel_ids=frozenset(),
+        timezone_name="Asia/Taipei",
+        duration=timedelta(days=7),
+        global_increment_limit_microusd=1_000_000,
+        background_increment_limit_microusd=250_000,
+        companion_daily_reply_limit=20,
+        now=trigger_time,
+    )
     settings = Settings(
         _env_file=None,
         discord_allowed_guild_ids="1",
@@ -129,6 +142,7 @@ async def test_successful_discord_reply_is_saved_with_reply_relationship(
             maximum_characters=12_000,
         ),
         chat_service=chat_service,  # type: ignore[arg-type]
+        trial_repository=trial_repository,
     )
     client._connection.user = FakeClientUser()  # type: ignore[assignment]
     discord_message = FakeDiscordMessage()
@@ -159,4 +173,14 @@ async def test_successful_discord_reply_is_saved_with_reply_relationship(
     assert stored.replied_to_message_id == "100"
     assert stored.segment_id is not None
     assert chat_service.received_context is not None
+    report = await trial_repository.report()
+    assert report["event_counts"] == [
+        {
+            "event_type": "reply_result",
+            "reason": "discord_reply_saved",
+            "outcome": "generated",
+            "count": 1,
+        }
+    ]
+    assert report["reply_latency_ms"]["count"] == 1  # type: ignore[index]
     await client.close()

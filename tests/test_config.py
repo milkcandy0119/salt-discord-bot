@@ -29,6 +29,14 @@ def test_defaults_are_safe_without_credentials() -> None:
     assert settings.reminder_dispatch_interval_seconds == 30
     assert settings.reminder_max_per_run == 20
     assert settings.reminder_max_attempts == 5
+    assert settings.health_heartbeat_path == "runtime/discord-assistant.heartbeat"
+    assert settings.health_heartbeat_interval_seconds == 15
+    assert settings.health_max_age_seconds == 90
+    assert settings.trial_duration_days == 7
+    assert settings.trial_timezone == "Asia/Taipei"
+    assert settings.trial_global_increment_limit_microusd == 1_000_000
+    assert settings.trial_background_increment_limit_microusd == 250_000
+    assert settings.trial_companion_daily_reply_limit == 20
     assert settings.missing_discord_settings == (
         "DISCORD_BOT_TOKEN",
         "DISCORD_ALLOWED_GUILD_IDS",

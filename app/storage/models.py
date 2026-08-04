@@ -153,6 +153,100 @@ class AdminAuditEventRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class TrialSessionRecord(Base):
+    """階段 9 試跑範圍、基準、增量上限及生命週期。"""
+
+    __tablename__ = "trial_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    guild_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    channel_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    companion_channel_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    timezone_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    baseline_global_committed_microusd: Mapped[int] = mapped_column(Integer, nullable=False)
+    baseline_background_committed_microusd: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    global_increment_limit_microusd: Mapped[int] = mapped_column(Integer, nullable=False)
+    background_increment_limit_microusd: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    companion_daily_reply_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stopped_reason: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TrialEventRecord(Base):
+    """不含聊天內容、作者名稱或模型輸出的試跑觀測事件。"""
+
+    __tablename__ = "trial_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("trial_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    guild_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    channel_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    message_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    channel_mode: Mapped[str | None] = mapped_column(String(16), index=True)
+    trigger_kind: Mapped[str | None] = mapped_column(String(32), index=True)
+    reason: Mapped[str | None] = mapped_column(String(64), index=True)
+    outcome: Mapped[str | None] = mapped_column(String(64), index=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+
+
+class TrialDailyCounterRecord(Base):
+    """以試跑時區日期原子限制 companion 自動回覆數。"""
+
+    __tablename__ = "trial_daily_counters"
+    __table_args__ = (
+        UniqueConstraint("session_id", "local_date", name="uq_trial_daily_counter"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("trial_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    local_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    companion_reply_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TrialFeedbackRecord(Base):
+    """管理員以固定分類標記訊息，不重複保存訊息內容。"""
+
+    __tablename__ = "trial_feedback"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "actor_user_id",
+            "target_message_id",
+            "category",
+            name="uq_trial_feedback_once",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("trial_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    guild_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    actor_user_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    target_message_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class BudgetStateRecord(Base):
     """整個系統唯一的一次性預算彙總狀態。"""
 

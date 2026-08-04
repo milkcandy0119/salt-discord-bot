@@ -91,6 +91,18 @@ class Settings(BaseSettings):
     reminder_max_attempts: int = Field(default=5, ge=1, le=20)
     reminder_retry_base_seconds: int = Field(default=60, ge=1, le=3_600)
     reminder_stale_minutes: int = Field(default=5, ge=1, le=60)
+    health_heartbeat_path: str = "runtime/discord-assistant.heartbeat"
+    health_heartbeat_interval_seconds: int = Field(default=15, ge=5, le=300)
+    health_max_age_seconds: int = Field(default=90, ge=15, le=3_600)
+    trial_duration_days: int = Field(default=7, ge=1, le=30)
+    trial_timezone: str = "Asia/Taipei"
+    trial_global_increment_limit_microusd: int = Field(
+        default=1_000_000, ge=1, le=10_000_000
+    )
+    trial_background_increment_limit_microusd: int = Field(
+        default=250_000, ge=1, le=3_000_000
+    )
+    trial_companion_daily_reply_limit: int = Field(default=20, ge=1, le=1_000)
 
     @field_validator("discord_bot_token", "openai_api_key", mode="before")
     @classmethod
@@ -119,6 +131,8 @@ class Settings(BaseSettings):
         "ai_embedding_model",
         "ai_embedding_price_version",
         "reminder_default_timezone",
+        "health_heartbeat_path",
+        "trial_timezone",
         mode="before",
     )
     @classmethod

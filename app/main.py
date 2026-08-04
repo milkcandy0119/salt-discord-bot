@@ -26,6 +26,7 @@ from app.storage.database import Database, upgrade_database
 from app.storage.personal_memories import PersonalMemoryRepository
 from app.storage.reminders import ReminderRepository
 from app.storage.repositories import MessageRepository
+from app.storage.trial import TrialRepository
 from app.storage.vector_store import SQLiteVectorStore
 from app.workers.background_worker import BackgroundWorker
 
@@ -69,6 +70,7 @@ async def run_discord(settings: Settings) -> int:
     personal_memory_repository = PersonalMemoryRepository(database.session_factory)
     reminder_repository = ReminderRepository(database.session_factory)
     admin_audit_repository = AdminAuditRepository(database.session_factory)
+    trial_repository = TrialRepository(database.session_factory)
     personal_memory_service = PersonalMemoryService(
         personal_memory_repository,
         sensitive_filter=SensitiveFilter(),
@@ -222,6 +224,7 @@ async def run_discord(settings: Settings) -> int:
         reminder_service=reminder_service,
         reminder_repository=reminder_repository,
         admin_audit_repository=admin_audit_repository,
+        trial_repository=trial_repository,
     )
     try:
         async with client:

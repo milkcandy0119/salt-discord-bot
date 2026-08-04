@@ -1,14 +1,16 @@
 # Discord Assistant
 
-這是一個分階段建立、可長期執行的 Discord 助手。目前完成到「階段 6.1：基本個人記憶」。
+這是一個分階段建立、可長期執行的 Discord 助手。目前完成到「階段 9：保守試跑工具」。
 Discord 訊息接收、安全持久化、免費切段、交易式預算控制、normal／companion 頻道模式、
 受控 AI 回覆、貼圖名稱中繼資料，以及可選的背景摘要與同頻道歷史檢索已可運作；歷史匯入、
-提醒與管理功能已實作；正式部署尚未啟用。
+提醒、管理、容器健康檢查、Restic 加密備份及受控試跑觀測已實作；七天試跑預設未啟動，
+實際 VPS 尚未建立。
 
 ## 需求
 
 - Python 3.12
 - [`uv`](https://docs.astral.sh/uv/)
+- 選用：Docker Engine／Docker Desktop（階段 8 部署驗收）
 
 ## 安裝與驗證
 
@@ -260,5 +262,6 @@ uv run alembic upgrade head
 - `docs/architecture.md`：訊息流程、模組邊界、資料模型與限制。
 - `docs/decisions.md`：已確認的保守試跑政策及後續待確認項目。
 
-階段 7 已加入持久化提醒、時區與管理查詢。後續階段 8 是 Docker Compose、健康檢查與加密
-備份。
+階段 8 的完整部署與還原操作請看 [`docs/deployment.md`](docs/deployment.md)。階段 9 已加入
+額外 US$1／背景 US$0.25 閘門、每日 companion 20 次上限、內容最小化觀測、固定分類評價及
+免費報告；啟動與結束流程請看 [`docs/trial.md`](docs/trial.md)。

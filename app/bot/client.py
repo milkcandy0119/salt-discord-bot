@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 
 import discord
 from discord.ext import tasks
@@ -22,10 +23,12 @@ from app.bot.memory_commands import PersonalMemoryCommandGroup
 from app.bot.message_handler import IncomingMessage, MessageHandler, SensitiveNotice
 from app.bot.reminder_commands import ReminderCommandGroup, TimezoneCommandGroup
 from app.bot.reminder_sender import DiscordReminderSender
+from app.bot.trial_commands import TrialCommandGroup
 from app.config import Settings
 from app.conversations.context_builder import ContextBuilder
 from app.conversations.history_retriever import HistoricalContextRetriever
 from app.conversations.segmenter import ConversationSegmenter
+from app.health import remove_heartbeat, write_heartbeat
 from app.memory.personal_memory import MemoryCaptureOutcome, PersonalMemoryService
 from app.reminders.dispatcher import ReminderDispatcher
 from app.reminders.service import ReminderService
@@ -34,6 +37,7 @@ from app.storage.admin_audit import AdminAuditRepository
 from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.reminders import ReminderRepository
 from app.storage.repositories import MessageRepository, NewMessage
+from app.storage.trial import TrialRepository
 from app.workers.background_worker import BackgroundWorker
 
 LOGGER = logging.getLogger(__name__)
@@ -125,6 +129,7 @@ class DiscordAssistantClient(discord.Client):
         reminder_service: ReminderService | None = None,
         reminder_repository: ReminderRepository | None = None,
         admin_audit_repository: AdminAuditRepository | None = None,
+        trial_repository: TrialRepository | None = None,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -143,6 +148,7 @@ class DiscordAssistantClient(discord.Client):
         self._personal_memory_service = personal_memory_service
         self._reminder_repository = reminder_repository
         self._admin_audit_repository = admin_audit_repository
+        self._trial_repository = trial_repository
         self._reminder_dispatcher = (
             ReminderDispatcher(
                 repository=reminder_repository,
@@ -203,6 +209,7 @@ class DiscordAssistantClient(discord.Client):
             reminder_repository is not None
             and admin_audit_repository is not None
             and background_repository is not None
+            and trial_repository is not None
         ):
             self.tree.add_command(
                 BotAdminCommandGroup(
@@ -210,6 +217,16 @@ class DiscordAssistantClient(discord.Client):
                     budget_manager=budget_manager,
                     background_repository=background_repository,
                     reminder_repository=reminder_repository,
+                    audit_repository=admin_audit_repository,
+                    allowed_guild_ids=settings.allowed_guild_ids,
+                    admin_user_ids=settings.sensitive_notification_user_ids,
+                    trial_repository=trial_repository,
+                )
+            )
+        if trial_repository is not None and admin_audit_repository is not None:
+            self.tree.add_command(
+                TrialCommandGroup(
+                    repository=trial_repository,
                     audit_repository=admin_audit_repository,
                     allowed_guild_ids=settings.allowed_guild_ids,
                     admin_user_ids=settings.sensitive_notification_user_ids,
@@ -225,6 +242,10 @@ class DiscordAssistantClient(discord.Client):
         await self._sync_application_commands()
         self.archive_inactive_segments.start()
         self.dispatch_budget_notifications.start()
+        self.write_health_heartbeat.change_interval(
+            seconds=self._settings.health_heartbeat_interval_seconds
+        )
+        self.write_health_heartbeat.start()
         if self._settings.background_ai_enabled and self._background_worker is not None:
             self.process_background_jobs.change_interval(
                 minutes=self._settings.background_job_interval_minutes
@@ -271,6 +292,9 @@ class DiscordAssistantClient(discord.Client):
             self.process_background_jobs.cancel()
         if self.dispatch_reminders.is_running():
             self.dispatch_reminders.cancel()
+        if self.write_health_heartbeat.is_running():
+            self.write_health_heartbeat.cancel()
+            remove_heartbeat(self._settings.health_heartbeat_path)
         await super().close()
 
     @tasks.loop(minutes=1)
@@ -350,9 +374,17 @@ class DiscordAssistantClient(discord.Client):
         except Exception as error:
             LOGGER.error("提醒派送批次失敗 error_type=%s", type(error).__name__)
 
+    @tasks.loop(seconds=15)
+    async def write_health_heartbeat(self) -> None:
+        """只在 Discord 用戶端就緒時更新本機健康心跳。"""
+
+        if self.is_ready():
+            write_heartbeat(self._settings.health_heartbeat_path)
+
     async def on_ready(self) -> None:
         """記錄連線完成；日誌只包含必要 ID。"""
 
+        write_heartbeat(self._settings.health_heartbeat_path)
         if self.user is not None:
             LOGGER.info("Discord 連線完成 bot_user_id=%s", self.user.id)
 
@@ -518,11 +550,33 @@ class DiscordAssistantClient(discord.Client):
             ChannelMode.NORMAL,
             explicit_signals,
         )
+        await self._record_trial_event(
+            idempotency_key=f"explicit_check:{incoming.discord_message_id}",
+            event_type="reply_decision",
+            incoming=incoming,
+            channel_mode=mode.value,
+            trigger_kind=explicit_decision.kind.value,
+            reason=explicit_decision.reason,
+            outcome="reply" if explicit_decision.should_reply else "no_reply",
+        )
         if explicit_decision.should_reply:
             self._companion_scheduler.cancel(incoming.channel_id)
-            await self._send_ai_reply(message, incoming, companion_generated=False)
+            await self._send_ai_reply(
+                message,
+                incoming,
+                companion_generated=False,
+                trigger_kind=explicit_decision.kind.value,
+            )
             return
         if mode is ChannelMode.COMPANION:
+            await self._record_trial_event(
+                idempotency_key=f"companion_schedule:{incoming.discord_message_id}",
+                event_type="companion_schedule",
+                incoming=incoming,
+                channel_mode=mode.value,
+                reason="observation_window",
+                outcome="scheduled",
+            )
             self._companion_scheduler.schedule(
                 incoming.channel_id,
                 lambda: self._evaluate_companion_reply_safely(message, incoming),
@@ -586,8 +640,42 @@ class DiscordAssistantClient(discord.Client):
                 now=now,
             ),
         )
+        await self._record_trial_event(
+            idempotency_key=f"companion_decision:{incoming.discord_message_id}",
+            event_type="reply_decision",
+            incoming=incoming,
+            channel_mode=ChannelMode.COMPANION.value,
+            trigger_kind=decision.kind.value,
+            reason=decision.reason,
+            outcome="reply" if decision.should_reply else "no_reply",
+        )
         if decision.should_reply:
-            await self._send_ai_reply(message, incoming, companion_generated=True)
+            if self._trial_repository is not None:
+                slot = await self._trial_repository.reserve_companion_reply(
+                    guild_id=str(incoming.guild_id),
+                    channel_id=str(incoming.channel_id),
+                    message_id=incoming.discord_message_id,
+                    now=now,
+                )
+                if slot in {"inactive", "daily_limit", "outside_scope"}:
+                    await self._record_trial_event(
+                        idempotency_key=(
+                            f"companion_limit:{incoming.discord_message_id}"
+                        ),
+                        event_type="reply_blocked",
+                        incoming=incoming,
+                        channel_mode=ChannelMode.COMPANION.value,
+                        trigger_kind=decision.kind.value,
+                        reason=slot,
+                        outcome="no_reply",
+                    )
+                    return
+            await self._send_ai_reply(
+                message,
+                incoming,
+                companion_generated=True,
+                trigger_kind=decision.kind.value,
+            )
 
     async def _send_ai_reply(
         self,
@@ -595,11 +683,13 @@ class DiscordAssistantClient(discord.Client):
         incoming: IncomingMessage,
         *,
         companion_generated: bool,
+        trigger_kind: str | None = None,
     ) -> None:
         """建立上下文、產生回覆、傳送 Discord 並保存回覆關係。"""
 
         if self.user is None:
             return
+        started_at = perf_counter()
         context = await self._context_builder.build(
             incoming.discord_message_id,
             assistant_author_id=str(self.user.id),
@@ -629,6 +719,16 @@ class DiscordAssistantClient(discord.Client):
                 outcome.status,
                 type(error).__name__,
             )
+            await self._record_trial_event(
+                idempotency_key=f"reply_result:{incoming.discord_message_id}",
+                event_type="reply_result",
+                incoming=incoming,
+                channel_mode=("companion" if companion_generated else "normal"),
+                trigger_kind=trigger_kind,
+                reason="discord_send_failed",
+                outcome=outcome.status,
+                latency_ms=round((perf_counter() - started_at) * 1_000),
+            )
             return
 
         try:
@@ -656,6 +756,16 @@ class DiscordAssistantClient(discord.Client):
                 sent.id,
                 type(error).__name__,
             )
+            await self._record_trial_event(
+                idempotency_key=f"reply_result:{incoming.discord_message_id}",
+                event_type="reply_result",
+                incoming=incoming,
+                channel_mode=("companion" if companion_generated else "normal"),
+                trigger_kind=trigger_kind,
+                reason="reply_save_failed",
+                outcome=outcome.status,
+                latency_ms=round((perf_counter() - started_at) * 1_000),
+            )
             return
 
         if companion_generated:
@@ -666,6 +776,52 @@ class DiscordAssistantClient(discord.Client):
             sent.id,
             outcome.status,
         )
+        await self._record_trial_event(
+            idempotency_key=f"reply_result:{incoming.discord_message_id}",
+            event_type="reply_result",
+            incoming=incoming,
+            channel_mode=("companion" if companion_generated else "normal"),
+            trigger_kind=trigger_kind,
+            reason="discord_reply_saved",
+            outcome=outcome.status,
+            latency_ms=round((perf_counter() - started_at) * 1_000),
+        )
+
+    async def _record_trial_event(
+        self,
+        *,
+        idempotency_key: str,
+        event_type: str,
+        incoming: IncomingMessage,
+        channel_mode: str | None = None,
+        trigger_kind: str | None = None,
+        reason: str | None = None,
+        outcome: str | None = None,
+        latency_ms: int | None = None,
+    ) -> None:
+        """觀測失敗不得影響訊息保存或 Discord 回覆。"""
+
+        if self._trial_repository is None:
+            return
+        try:
+            await self._trial_repository.record_event(
+                idempotency_key=idempotency_key,
+                event_type=event_type,
+                guild_id=str(incoming.guild_id) if incoming.guild_id is not None else None,
+                channel_id=str(incoming.channel_id),
+                message_id=incoming.discord_message_id,
+                channel_mode=channel_mode,
+                trigger_kind=trigger_kind,
+                reason=reason,
+                outcome=outcome,
+                latency_ms=latency_ms,
+            )
+        except Exception as error:
+            LOGGER.error(
+                "試跑觀測事件保存失敗 message_id=%s error_type=%s",
+                incoming.discord_message_id,
+                type(error).__name__,
+            )
 
     async def _is_reply_to_this_bot(
         self,
