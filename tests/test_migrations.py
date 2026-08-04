@@ -52,7 +52,7 @@ def test_phase_one_database_upgrade_preserves_existing_messages(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert message == ("階段 1 既有訊息", None)
-    assert revision == ("20260804_0007",)
+    assert revision == ("20260804_0008",)
 
 
 def test_phase_five_migration_does_not_queue_existing_archived_segments(
@@ -118,7 +118,7 @@ def test_personal_memory_migration_does_not_infer_existing_chat(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert memory_count == (0,)
-    assert revision == ("20260804_0007",)
+    assert revision == ("20260804_0008",)
 
 
 def test_reminder_migration_creates_no_default_jobs_or_private_data(
@@ -140,7 +140,7 @@ def test_reminder_migration_creates_no_default_jobs_or_private_data(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert counts == (0, 0, 0)
-    assert revision == ("20260804_0007",)
+    assert revision == ("20260804_0008",)
 
 
 def test_trial_migration_does_not_start_or_infer_a_trial(
@@ -167,4 +167,64 @@ def test_trial_migration_does_not_start_or_infer_a_trial(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert counts == (0, 0, 0, 0)
-    assert revision == ("20260804_0007",)
+    assert revision == ("20260804_0008",)
+
+
+def test_production_migration_preserves_existing_trial_and_adds_safe_state(
+    temporary_test_directory: Path,
+) -> None:
+    """升級正式運行狀態時不得重設既有試跑基準。"""
+
+    database_path = temporary_test_directory / "production-upgrade.sqlite3"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    upgrade_database(database_url, revision="20260804_0007")
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute(
+            """
+            INSERT INTO trial_sessions (
+                status, guild_ids, channel_ids, companion_channel_ids, timezone_name,
+                baseline_global_committed_microusd,
+                baseline_background_committed_microusd,
+                global_increment_limit_microusd,
+                background_increment_limit_microusd,
+                companion_daily_reply_limit,
+                started_at, ends_at, ended_at, stopped_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "active",
+                '["1"]',
+                '["2"]',
+                '["2"]',
+                "Asia/Taipei",
+                0,
+                0,
+                1_000_000,
+                250_000,
+                20,
+                "2026-08-04 00:00:00",
+                "2026-08-11 00:00:00",
+                None,
+                None,
+                "2026-08-04 00:00:00",
+                "2026-08-04 00:00:00",
+            ),
+        )
+        connection.commit()
+
+    upgrade_database(database_url)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT status, final_global_increment_microusd,
+                   final_background_increment_microusd
+            FROM trial_sessions
+            """
+        ).fetchone()
+        connection.execute("UPDATE trial_sessions SET status = 'production'")
+        connection.commit()
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+
+    assert row == ("active", None, None)
+    assert revision == ("20260804_0008",)

@@ -88,6 +88,10 @@ class ReplyTriggerPolicy:
     def decide(self, mode: ChannelMode, signals: ReplySignals) -> TriggerDecision:
         """在不呼叫 AI 的情況下判斷是否建立回覆候選。"""
 
+        # 已註冊 Slash Command 不會進入 on_message；收到這種文字表示 Discord
+        # 尚未辨識命令或使用者手動送出了文字，不應交給聊天模型假裝執行。
+        if signals.content.lstrip().startswith("/"):
+            return TriggerDecision(False, TriggerKind.NONE, "slash_like_text")
         explicit = self._explicit_trigger(signals)
         if explicit is not None:
             return explicit
@@ -101,10 +105,10 @@ class ReplyTriggerPolicy:
             return TriggerDecision(False, TriggerKind.NONE, "companion_cooldown")
         if len(signals.recent_human_author_ids) > 1 and not signals.bot_spoke_recently:
             return TriggerDecision(False, TriggerKind.NONE, "multiple_humans_talking")
-        if signals.bot_spoke_recently and len(content) >= 2:
-            return TriggerDecision(True, TriggerKind.COMPANION, "recent_bot_continuation")
         if self._QUESTION_PATTERN.search(content):
             return TriggerDecision(True, TriggerKind.COMPANION, "question_or_help_request")
+        if signals.bot_spoke_recently and len(content) >= 2:
+            return TriggerDecision(True, TriggerKind.COMPANION, "recent_bot_continuation")
         return TriggerDecision(False, TriggerKind.NONE, "no_companion_signal")
 
     @staticmethod

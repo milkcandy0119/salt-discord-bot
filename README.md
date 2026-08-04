@@ -44,6 +44,8 @@ BACKGROUND_AI_ENABLED=false
 ```
 
 ID 清單以逗號分隔。`DISCORD_ADMIN_USER_IDS` 可以留空；擁有者仍會收到敏感事件通知。
+`DISCORD_OWNER_USER_ID` 也用於免費的聊天身分對照：本人發言、被提及，或對話詢問主人／開發者
+時，程式會先按 Discord ID 確認，再把角色關係提供給模型，不依賴可變的暱稱。
 
 Discord Developer Portal 必須同時開啟 **Message Content Intent**。程式端也已明確啟用此
 intent，否則一般訊息的 `content` 會是空字串。Bot 只需查看白名單頻道及接收訊息所需權限；
@@ -56,6 +58,20 @@ uv run python -m app.main
 ```
 
 程式會先自動執行 Alembic migration，再連線 Discord。停止程式可使用 `Ctrl+C`。
+
+## 全域公開指令
+
+Bot 啟動時只把以下免費、唯讀且全部採私密回覆的 `/salt` 指令同步為 Discord Global
+Commands；它們只允許在伺服器內使用，不開放私訊：
+
+- `/salt about`：非官方身分聲明與人設版本。
+- `/salt help`：使用方式，以及目前伺服器是否已啟用完整功能。
+- `/salt privacy`：不讀取實際資料的固定隱私摘要。
+- `/salt ping`：只顯示連線狀態與 Discord 延遲。
+
+這四個指令不呼叫 OpenAI、不讀取聊天或個人記憶，也不顯示預算、佇列或管理資料。既有
+`/bot`、`/memory`、`/remind`、`/timezone`、`/trial` 仍只同步到
+`DISCORD_ALLOWED_GUILD_IDS`，不得因全域同步而公開。
 
 ## 對話段落
 
@@ -90,6 +106,8 @@ uv run python -m app.main
   不需要等待。
 - 陪伴模式在多位真人密集交談時不插話；預設只回應問題／求助，或延續機器人最近參與的
   對話，自動回覆成功後冷卻 120 秒。
+- 明確提問、提及、回覆機器人或指令會使用 Discord 回覆；Salt 自動加入日常話題、發表看法
+  或接梗時改用一般頻道訊息，不把每次參與都掛在某一位成員的訊息下面。
 - 第一版只在有人發言後判斷是否回覆，不會在無人發言時主動開啟話題，也不使用付費模型
   判斷「該不該回覆」。
 - 頻道以 Discord channel ID 設定；人設獨立且有版本，只能影響表達方式，不能覆蓋安全、
@@ -264,4 +282,4 @@ uv run alembic upgrade head
 
 階段 8 的完整部署與還原操作請看 [`docs/deployment.md`](docs/deployment.md)。階段 9 已加入
 額外 US$1／背景 US$0.25 閘門、每日 companion 20 次上限、內容最小化觀測、固定分類評價及
-免費報告；啟動與結束流程請看 [`docs/trial.md`](docs/trial.md)。
+免費報告；啟動、結束與切換正式運行的流程請看 [`docs/trial.md`](docs/trial.md)。

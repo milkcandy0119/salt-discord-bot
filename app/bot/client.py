@@ -11,6 +11,7 @@ from discord.ext import tasks
 
 from app.ai.budget_manager import BudgetManager, BudgetSnapshot
 from app.ai.chat_service import ChatService
+from app.ai.persona import Persona
 from app.bot.admin_commands import BotAdminCommandGroup
 from app.bot.channel_modes import (
     ChannelMode,
@@ -19,6 +20,7 @@ from app.bot.channel_modes import (
     ReplyTriggerPolicy,
 )
 from app.bot.companion_scheduler import CompanionScheduler
+from app.bot.global_commands import SaltGlobalCommandGroup
 from app.bot.memory_commands import PersonalMemoryCommandGroup
 from app.bot.message_handler import IncomingMessage, MessageHandler, SensitiveNotice
 from app.bot.reminder_commands import ReminderCommandGroup, TimezoneCommandGroup
@@ -122,6 +124,7 @@ class DiscordAssistantClient(discord.Client):
         budget_manager: BudgetManager,
         context_builder: ContextBuilder,
         chat_service: ChatService,
+        persona: Persona,
         background_repository: BackgroundMemoryRepository | None = None,
         background_worker: BackgroundWorker | None = None,
         history_retriever: HistoricalContextRetriever | None = None,
@@ -183,6 +186,14 @@ class DiscordAssistantClient(discord.Client):
             allowed_channel_ids=settings.allowed_channel_ids,
         )
         self.tree = discord.app_commands.CommandTree(self)
+        self.tree.add_command(
+            SaltGlobalCommandGroup(
+                client=self,
+                persona=persona,
+                allowed_guild_ids=settings.allowed_guild_ids,
+            )
+        )
+        guilds = [discord.Object(id=guild_id) for guild_id in settings.allowed_guild_ids]
         if personal_memory_service is not None:
             self.tree.add_command(
                 PersonalMemoryCommandGroup(
@@ -190,20 +201,23 @@ class DiscordAssistantClient(discord.Client):
                     allowed_guild_ids=settings.allowed_guild_ids,
                     admin_user_ids=settings.sensitive_notification_user_ids,
                     audit_repository=admin_audit_repository,
-                )
+                ),
+                guilds=guilds,
             )
         if reminder_service is not None:
             self.tree.add_command(
                 ReminderCommandGroup(
                     service=reminder_service,
                     allowed_guild_ids=settings.allowed_guild_ids,
-                )
+                ),
+                guilds=guilds,
             )
             self.tree.add_command(
                 TimezoneCommandGroup(
                     service=reminder_service,
                     allowed_guild_ids=settings.allowed_guild_ids,
-                )
+                ),
+                guilds=guilds,
             )
         if (
             reminder_repository is not None
@@ -221,7 +235,8 @@ class DiscordAssistantClient(discord.Client):
                     allowed_guild_ids=settings.allowed_guild_ids,
                     admin_user_ids=settings.sensitive_notification_user_ids,
                     trial_repository=trial_repository,
-                )
+                ),
+                guilds=guilds,
             )
         if trial_repository is not None and admin_audit_repository is not None:
             self.tree.add_command(
@@ -230,7 +245,8 @@ class DiscordAssistantClient(discord.Client):
                     audit_repository=admin_audit_repository,
                     allowed_guild_ids=settings.allowed_guild_ids,
                     admin_user_ids=settings.sensitive_notification_user_ids,
-                )
+                ),
+                guilds=guilds,
             )
 
     async def setup_hook(self) -> None:
@@ -258,26 +274,42 @@ class DiscordAssistantClient(discord.Client):
             self.dispatch_reminders.start()
 
     async def _sync_application_commands(self) -> None:
-        """只把應用程式命令同步到明確允許的伺服器。"""
+        """全域只同步公開指令，管理及個人功能只同步到白名單伺服器。"""
 
-        if not self.tree.get_commands():
-            return
+        try:
+            global_commands = await self.tree.sync()
+        except discord.DiscordException as error:
+            LOGGER.error(
+                "全域 Slash Command 同步失敗 error_type=%s http_status=%s code=%s",
+                type(error).__name__,
+                getattr(error, "status", None),
+                getattr(error, "code", None),
+            )
+        else:
+            LOGGER.info(
+                "全域 Slash Command 同步完成 count=%s names=%s",
+                len(global_commands),
+                ",".join(command.name for command in global_commands),
+            )
         for guild_id in self._settings.allowed_guild_ids:
             guild = discord.Object(id=guild_id)
             try:
-                self.tree.copy_global_to(guild=guild)
                 commands = await self.tree.sync(guild=guild)
             except discord.DiscordException as error:
                 LOGGER.error(
-                    "應用程式 Slash Command 同步失敗 guild_id=%s error_type=%s",
+                    "應用程式 Slash Command 同步失敗 guild_id=%s "
+                    "error_type=%s http_status=%s code=%s",
                     guild_id,
                     type(error).__name__,
+                    getattr(error, "status", None),
+                    getattr(error, "code", None),
                 )
             else:
                 LOGGER.info(
-                    "應用程式 Slash Command 同步完成 guild_id=%s count=%s",
+                    "應用程式 Slash Command 同步完成 guild_id=%s count=%s names=%s",
                     guild_id,
                     len(commands),
+                    ",".join(command.name for command in commands),
                 )
 
     async def close(self) -> None:
@@ -568,6 +600,9 @@ class DiscordAssistantClient(discord.Client):
                 trigger_kind=explicit_decision.kind.value,
             )
             return
+        if explicit_decision.reason == "slash_like_text":
+            self._companion_scheduler.cancel(incoming.channel_id)
+            return
         if mode is ChannelMode.COMPANION:
             await self._record_trial_event(
                 idempotency_key=f"companion_schedule:{incoming.discord_message_id}",
@@ -675,6 +710,7 @@ class DiscordAssistantClient(discord.Client):
                 incoming,
                 companion_generated=True,
                 trigger_kind=decision.kind.value,
+                reply_to_message=decision.reason == "question_or_help_request",
             )
 
     async def _send_ai_reply(
@@ -684,8 +720,9 @@ class DiscordAssistantClient(discord.Client):
         *,
         companion_generated: bool,
         trigger_kind: str | None = None,
+        reply_to_message: bool = True,
     ) -> None:
-        """建立上下文、產生回覆、傳送 Discord 並保存回覆關係。"""
+        """建立上下文並依回答或加入話題模式傳送及保存訊息。"""
 
         if self.user is None:
             return
@@ -706,12 +743,19 @@ class DiscordAssistantClient(discord.Client):
             )
         outcome = await self._chat_service.generate(context)
         outgoing_content = self._fit_discord_message(outcome.content)
+        delivery_mode = "reply" if reply_to_message else "channel"
         try:
-            sent = await message.reply(
-                outgoing_content,
-                mention_author=False,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            if reply_to_message:
+                sent = await message.reply(
+                    outgoing_content,
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            else:
+                sent = await message.channel.send(
+                    outgoing_content,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
         except Exception as error:
             LOGGER.error(
                 "Discord AI 回覆傳送失敗 trigger_message_id=%s status=%s error_type=%s",
@@ -742,7 +786,9 @@ class DiscordAssistantClient(discord.Client):
                     content=outgoing_content,
                     discord_created_at=sent.created_at,
                     received_at=datetime.now(UTC),
-                    replied_to_message_id=incoming.discord_message_id,
+                    replied_to_message_id=(
+                        incoming.discord_message_id if reply_to_message else None
+                    ),
                     is_bot=True,
                     is_sensitive=False,
                     sensitive_categories=(),
@@ -771,10 +817,12 @@ class DiscordAssistantClient(discord.Client):
         if companion_generated:
             self._last_companion_reply_at[incoming.channel_id] = datetime.now(UTC)
         LOGGER.info(
-            "Discord AI 回覆完成 trigger_message_id=%s reply_message_id=%s status=%s",
+            "Discord AI 回覆完成 trigger_message_id=%s reply_message_id=%s "
+            "status=%s delivery_mode=%s",
             incoming.discord_message_id,
             sent.id,
             outcome.status,
+            delivery_mode,
         )
         await self._record_trial_event(
             idempotency_key=f"reply_result:{incoming.discord_message_id}",
@@ -782,7 +830,11 @@ class DiscordAssistantClient(discord.Client):
             incoming=incoming,
             channel_mode=("companion" if companion_generated else "normal"),
             trigger_kind=trigger_kind,
-            reason="discord_reply_saved",
+            reason=(
+                "discord_reply_saved"
+                if reply_to_message
+                else "discord_channel_message_saved"
+            ),
             outcome=outcome.status,
             latency_ms=round((perf_counter() - started_at) * 1_000),
         )

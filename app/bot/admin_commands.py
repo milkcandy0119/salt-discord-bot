@@ -103,7 +103,8 @@ class BotAdminCommandGroup(app_commands.Group):
                 (
                     f"狀態：{report['status']}",
                     f"開始：{report['started_at']}",
-                    f"結束：{report['ends_at']}",
+                    f"預定結束：{report['ends_at']}",
+                    f"實際結束：{report['ended_at'] or '尚未結束'}",
                     "增量額度："
                     f"{report['global_increment_microusd']}／"
                     f"{report['global_increment_limit_microusd']} μUSD",

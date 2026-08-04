@@ -125,6 +125,7 @@ async def run_discord(settings: Settings) -> int:
         maximum_personal_memory_characters=(
             settings.ai_personal_memory_context_characters
         ),
+        owner_user_id=str(settings.owner_user_id),
     )
     segmenter = ConversationSegmenter(
         database.session_factory,
@@ -217,6 +218,7 @@ async def run_discord(settings: Settings) -> int:
         budget_manager=budget_manager,
         context_builder=context_builder,
         chat_service=chat_service,
+        persona=persona,
         background_repository=background_repository,
         background_worker=background_worker,
         history_retriever=history_retriever,

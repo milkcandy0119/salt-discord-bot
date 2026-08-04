@@ -48,6 +48,8 @@ class TrialSession:
     ends_at: datetime
     ended_at: datetime | None
     stopped_reason: str | None
+    final_global_increment_microusd: int | None
+    final_background_increment_microusd: int | None
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -75,6 +77,10 @@ def _snapshot(record: TrialSessionRecord) -> TrialSession:
         ends_at=_as_utc(record.ends_at),
         ended_at=_as_utc(record.ended_at) if record.ended_at else None,
         stopped_reason=record.stopped_reason,
+        final_global_increment_microusd=record.final_global_increment_microusd,
+        final_background_increment_microusd=(
+            record.final_background_increment_microusd
+        ),
     )
 
 
@@ -140,6 +146,8 @@ class TrialRepository:
                 ends_at=effective_now + duration,
                 ended_at=None,
                 stopped_reason=None,
+                final_global_increment_microusd=None,
+                final_background_increment_microusd=None,
                 created_at=effective_now,
                 updated_at=effective_now,
             )
@@ -181,6 +189,7 @@ class TrialRepository:
                 "resume": ({"paused"}, "active"),
                 "finish": ({"active", "paused"}, "completed"),
                 "stop": ({"active", "paused"}, "stopped"),
+                "go_live": ({"active", "paused", "completed"}, "production"),
             }
             if status not in transitions:
                 raise ValueError("未知的試跑狀態操作")
@@ -191,11 +200,32 @@ class TrialRepository:
                 raise TrialStateError("試跑已到期，只能結束並產生報告")
             record.status = target
             record.updated_at = effective_now
-            if target in {"completed", "stopped"}:
-                record.ended_at = effective_now
-                record.stopped_reason = reason or (
-                    "manual_finish" if target == "completed" else "manual_stop"
-                )
+            if target in {"completed", "stopped", "production"}:
+                if record.ended_at is None:
+                    record.ended_at = min(effective_now, _as_utc(record.ends_at))
+                budget = await session.get(BudgetStateRecord, 1)
+                if budget is None:
+                    raise TrialStateError("找不到預算狀態，請先執行 migration")
+                if record.final_global_increment_microusd is None:
+                    record.final_global_increment_microusd = max(
+                        0,
+                        budget.global_spent_microusd
+                        + budget.global_reserved_microusd
+                        - record.baseline_global_committed_microusd,
+                    )
+                if record.final_background_increment_microusd is None:
+                    record.final_background_increment_microusd = max(
+                        0,
+                        budget.background_spent_microusd
+                        + budget.background_reserved_microusd
+                        - record.baseline_background_committed_microusd,
+                    )
+                default_reason = {
+                    "completed": "manual_finish",
+                    "stopped": "manual_stop",
+                    "production": "promoted_to_production",
+                }[target]
+                record.stopped_reason = reason or default_reason
             await session.flush()
             return _snapshot(record)
 
@@ -269,6 +299,8 @@ class TrialRepository:
             )
             if trial is None:
                 return "not_started"
+            if trial.status == "production":
+                return "allowed"
             if trial.status != "active" or effective_now >= _as_utc(trial.ends_at):
                 return "inactive"
             if guild_id not in trial.guild_ids or channel_id not in trial.companion_channel_ids:
@@ -429,19 +461,22 @@ class TrialRepository:
                     .order_by(TrialDailyCounterRecord.local_date)
                 )
             ).all()
-            paid_rows = (
-                await session.execute(
-                    select(
-                        PaidAiCallRecord.purpose,
-                        func.count(),
-                        func.coalesce(func.sum(PaidAiCallRecord.input_tokens), 0),
-                        func.coalesce(func.sum(PaidAiCallRecord.output_tokens), 0),
-                        func.coalesce(func.sum(PaidAiCallRecord.actual_cost_microusd), 0),
-                    )
-                    .where(PaidAiCallRecord.created_at >= trial.started_at)
-                    .group_by(PaidAiCallRecord.purpose)
+            paid_query = (
+                select(
+                    PaidAiCallRecord.purpose,
+                    func.count(),
+                    func.coalesce(func.sum(PaidAiCallRecord.input_tokens), 0),
+                    func.coalesce(func.sum(PaidAiCallRecord.output_tokens), 0),
+                    func.coalesce(func.sum(PaidAiCallRecord.actual_cost_microusd), 0),
                 )
-            ).all()
+                .where(PaidAiCallRecord.created_at >= trial.started_at)
+                .group_by(PaidAiCallRecord.purpose)
+            )
+            if trial.ended_at is not None:
+                paid_query = paid_query.where(
+                    PaidAiCallRecord.created_at <= trial.ended_at
+                )
+            paid_rows = (await session.execute(paid_query)).all()
             latencies = list(
                 await session.scalars(
                     select(TrialEventRecord.latency_ms)
@@ -461,19 +496,30 @@ class TrialRepository:
             background_committed = (
                 budget.background_spent_microusd + budget.background_reserved_microusd
             )
-            global_increment = max(
-                0, global_committed - trial.baseline_global_committed_microusd
+            global_increment = (
+                trial.final_global_increment_microusd
+                if trial.final_global_increment_microusd is not None
+                else max(
+                    0, global_committed - trial.baseline_global_committed_microusd
+                )
             )
-            background_increment = max(
-                0,
-                background_committed
-                - trial.baseline_background_committed_microusd,
+            background_increment = (
+                trial.final_background_increment_microusd
+                if trial.final_background_increment_microusd is not None
+                else max(
+                    0,
+                    background_committed
+                    - trial.baseline_background_committed_microusd,
+                )
             )
             return {
                 "session_id": trial.id,
                 "status": effective_status,
                 "started_at": _as_utc(trial.started_at).isoformat(),
                 "ends_at": _as_utc(trial.ends_at).isoformat(),
+                "ended_at": (
+                    _as_utc(trial.ended_at).isoformat() if trial.ended_at else None
+                ),
                 "guild_count": len(trial.guild_ids),
                 "channel_count": len(trial.channel_ids),
                 "companion_channel_count": len(trial.companion_channel_ids),

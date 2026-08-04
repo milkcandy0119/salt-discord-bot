@@ -100,6 +100,22 @@ def test_recent_bot_participation_allows_conversation_continuation() -> None:
     assert decision.reason == "recent_bot_continuation"
 
 
+def test_question_takes_priority_over_plain_conversation_continuation() -> None:
+    decision = make_policy().decide(
+        ChannelMode.COMPANION,
+        ReplySignals(
+            channel_id=20,
+            content="那接下來要怎麼處理？",
+            recent_human_author_ids=frozenset({1}),
+            bot_spoke_recently=True,
+            now=NOW,
+        ),
+    )
+
+    assert decision.should_reply is True
+    assert decision.reason == "question_or_help_request"
+
+
 def test_companion_cooldown_blocks_only_automatic_reply() -> None:
     policy = make_policy()
     signals = ReplySignals(
@@ -142,3 +158,22 @@ def test_sticker_only_message_does_not_trigger_companion_ai() -> None:
 
     assert decision.should_reply is False
     assert decision.reason == "empty_content"
+
+
+@pytest.mark.parametrize("mode", [ChannelMode.NORMAL, ChannelMode.COMPANION])
+def test_unrecognized_slash_like_text_never_triggers_chat_ai(mode: ChannelMode) -> None:
+    decision = make_policy().decide(
+        mode,
+        ReplySignals(
+            channel_id=20,
+            content="/salt ping",
+            mentioned_bot=True,
+            recent_human_author_ids=frozenset({1}),
+            bot_spoke_recently=True,
+            now=NOW,
+        ),
+    )
+
+    assert decision.should_reply is False
+    assert decision.kind is TriggerKind.NONE
+    assert decision.reason == "slash_like_text"

@@ -177,6 +177,9 @@ class BudgetManager:
                 .order_by(TrialSessionRecord.id.desc())
                 .limit(1)
             )
+            # 正式運行保留永久預算上限，但不再套用已封存的試跑增量限制。
+            if trial is not None and trial.status == "production":
+                trial = None
             if trial is not None:
                 trial_ends_at = (
                     trial.ends_at.replace(tzinfo=UTC)

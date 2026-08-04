@@ -14,12 +14,13 @@ from app.storage.trial import TrialRepository, TrialStateError
 TRIAL_START_CONFIRMATION = "確認啟動階段 9 七天保守試跑"
 TRIAL_RESUME_CONFIRMATION = "確認恢復階段 9 試跑"
 TRIAL_FINISH_CONFIRMATION = "確認結束階段 9 試跑"
+TRIAL_GO_LIVE_CONFIRMATION = "確認結束階段 9 並進入正式運行"
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="不輸出聊天內容的階段 9 試跑管理工具")
     commands = parser.add_subparsers(dest="command", required=True)
-    start = commands.add_parser("start", help="以目前預算建立不可重設的七天試跑基準")
+    start = commands.add_parser("start", help="以目前預算建立不可重設的試跑基準")
     start.add_argument("--confirmation", required=True)
     commands.add_parser("status", help="免費查看試跑彙總")
     commands.add_parser("report", help="免費輸出試跑評估 JSON")
@@ -28,6 +29,11 @@ def _parser() -> argparse.ArgumentParser:
     resume.add_argument("--confirmation", required=True)
     finish = commands.add_parser("finish", help="結束試跑並永久停止本次新付費預留")
     finish.add_argument("--confirmation", required=True)
+    go_live = commands.add_parser(
+        "go-live",
+        help="封存試跑並回到永久全域與背景預算限制下正式運行",
+    )
+    go_live.add_argument("--confirmation", required=True)
     return parser
 
 
@@ -66,6 +72,12 @@ async def _run(arguments: argparse.Namespace) -> dict[str, object]:
             if arguments.confirmation != TRIAL_FINISH_CONFIRMATION:
                 raise ValueError(f"結束確認文字必須完全等於：{TRIAL_FINISH_CONFIRMATION}")
             await repository.set_status("finish")
+        elif arguments.command == "go-live":
+            if arguments.confirmation != TRIAL_GO_LIVE_CONFIRMATION:
+                raise ValueError(
+                    f"正式運行確認文字必須完全等於：{TRIAL_GO_LIVE_CONFIRMATION}"
+                )
+            await repository.set_status("go_live")
         return await repository.report()
     finally:
         await database.dispose()

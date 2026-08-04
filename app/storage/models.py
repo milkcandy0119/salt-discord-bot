@@ -177,6 +177,8 @@ class TrialSessionRecord(Base):
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stopped_reason: Mapped[str | None] = mapped_column(String(64))
+    final_global_increment_microusd: Mapped[int | None] = mapped_column(Integer)
+    final_background_increment_microusd: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

@@ -4,7 +4,8 @@
 
 目前已在既有 Discord 訊息、安全閘門、SQLite 持久化、確定性切段與一次性預算帳本之上，
 加入 channel ID 模式、免費回覆觸發、版本化人設、有限上下文、OpenAI Responses API 回覆，
-以及預設停用的背景摘要與同頻道向量檢索。
+預設停用的背景摘要與同頻道向量檢索，以及和伺服器限定管理功能分離的 `/salt` 全域公開
+指令。
 程式在沒有 Discord 設定時仍以安全模式啟動；設定完整時才啟動 Discord.py 用戶端。
 
 目前已包含提醒、管理命令、階段 8 容器部署，以及預設未啟動的階段 9 試跑觀測。沒有 OpenAI
@@ -30,8 +31,12 @@
 - `app.config`：環境設定、祕密遮罩及 Discord ID 清單解析。
 - `app.main`：安全啟動檢查、migration 與 Discord 用戶端生命週期。
 - `app.bot.client`：Discord.py 事件轉換及固定安全通知。
+- `app.bot.global_commands`：只包含免費、私密、伺服器情境限定的公開身分、說明、隱私與
+  連線狀態指令。
 - `app.bot.message_handler`：白名單、安全掃描、先保存後通知的流程編排。
 - `app.conversations.segmenter`：回覆優先、保守續接、封存及重啟脈絡。
+- `app.conversations.context_builder`：有限上下文、個人記憶，以及依固定 Discord ID 產生的
+  擁有者／開發者身分對照；對照只供稱呼，不授予模型管理權限。
 - `app.conversations.history_retriever`：只在確定聊天時執行的同頻道歷史摘要檢索。
 - `app.ai.budget_manager`：所有付費服務唯一的預留、結算、釋放與門檻通知入口。
 - `app.ai.summary_service`／`embedding_service`：可替換供應商的摘要與向量化安全閘門。
@@ -46,7 +51,8 @@
 - `app.backup.service`：SQLite Online Backup API、Restic 配接、驗證標記與安全輪替。
 - `app.backup_cli`：明確初始化、每日 UTC 排程、驗證與隔離還原入口。
 - `app.storage.trial`：不可重設試跑基準、每日 companion 名額、內容最小化事件及彙總。
-- `app.trial_cli`／`app.bot.trial_commands`：本機生命週期及固定管理員 ID 的私密評價入口。
+- `app.trial_cli`／`app.bot.trial_commands`：本機生命週期、試跑封存、正式運行切換及固定管理員
+  ID 的私密評價入口。
 - `app.bot.reminder_commands`／`admin_commands`：本人提醒與固定管理員 ID 的私密狀態查詢。
 - `app.security.sensitive_filter`：完全在本機執行的確定性敏感資料規則。
 - `app.security.access_policy`：擁有者與管理員的敏感事件查閱權限。
@@ -206,6 +212,10 @@ Context Builder 只載入觸發訊息作者在相同 guild 的記憶，最多 20
 
 免費規則會拒絕空白內容、120 秒冷卻中的自動回覆，以及機器人未參與時的多人密集交談；
 問題／求助文字或最近 10 分鐘仍在延續機器人參與的對話才會建立陪伴候選。
+
+傳送方式和是否生成分開判斷：明確提及、回覆、指令及問題／求助使用 Discord reply 並保存
+`replied_to_message_id`；最近機器人參與所形成的日常接話使用一般 channel message，資料庫不
+偽造回覆關係。兩者仍使用相同安全、上下文與預算流程。
 
 陪伴模式第一版只處理由新訊息引發的候選，不建立無人發言時的排程。頻道模式解析、免費觸發
 策略、上下文建立、AI 生成與 Discord 傳送必須維持分離，讓模式規則可以測試及替換。

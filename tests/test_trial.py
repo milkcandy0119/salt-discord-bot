@@ -131,6 +131,57 @@ async def test_pause_finish_and_expiry_block_new_paid_calls(database: Database) 
 
 
 @pytest.mark.asyncio
+async def test_go_live_freezes_trial_and_restores_permanent_budget_rules(
+    database: Database,
+) -> None:
+    repository = TrialRepository(database.session_factory)
+    manager = BudgetManager(database.session_factory)
+    await _start(repository)
+    price = ModelPrice("test", "test", 1, 0)
+
+    await manager.reserve(
+        purpose=PaidPurpose.FOREGROUND_CHAT,
+        price=price,
+        maximum_input_tokens=1_000_000,
+        maximum_output_tokens=0,
+    )
+    await repository.set_status("go_live", now=NOW + timedelta(hours=1))
+    frozen = await repository.report(now=NOW + timedelta(hours=1))
+
+    assert frozen["status"] == "production"
+    assert frozen["ended_at"] == (NOW + timedelta(hours=1)).isoformat()
+    assert frozen["global_increment_microusd"] == 1
+    assert await repository.reserve_companion_reply(
+        guild_id="1",
+        channel_id="11",
+        message_id="after-go-live",
+        now=NOW + timedelta(hours=2),
+    ) == "allowed"
+
+    await manager.reserve(
+        purpose=PaidPurpose.FOREGROUND_CHAT,
+        price=price,
+        maximum_input_tokens=1_000_000,
+        maximum_output_tokens=0,
+    )
+    after_production_use = await repository.report(now=NOW + timedelta(hours=2))
+    assert after_production_use["global_increment_microusd"] == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_trial_can_be_promoted_to_production(database: Database) -> None:
+    repository = TrialRepository(database.session_factory)
+    await _start(repository)
+
+    await repository.set_status("finish", now=NOW + timedelta(hours=1))
+    promoted = await repository.set_status("go_live", now=NOW + timedelta(hours=2))
+
+    assert promoted.status == "production"
+    assert promoted.ended_at == NOW + timedelta(hours=1)
+    assert promoted.stopped_reason == "promoted_to_production"
+
+
+@pytest.mark.asyncio
 async def test_companion_daily_limit_is_idempotent_and_uses_trial_timezone(
     database: Database,
 ) -> None:

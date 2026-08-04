@@ -15,6 +15,10 @@ from app.storage.personal_memories import PersonalMemory, PersonalMemoryReposito
 from app.storage.vector_store import HistoricalSummary
 
 _DISCORD_USER_MENTION_PATTERN = re.compile(r"<@!?(\d+)>")
+_OWNER_REFERENCE_PATTERN = re.compile(
+    r"主人|開發者|擁有者|\bowner\b|\bdeveloper\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +53,7 @@ class ContextBuilder:
         maximum_mentioned_participants: int = 3,
         personal_memory_repository: PersonalMemoryRepository | None = None,
         maximum_personal_memory_characters: int = 1_500,
+        owner_user_id: str | None = None,
     ) -> None:
         if maximum_characters <= 0:
             raise ValueError("最大上下文字元數必須大於零")
@@ -74,6 +79,7 @@ class ContextBuilder:
         self._maximum_personal_memory_characters = (
             maximum_personal_memory_characters
         )
+        self._owner_user_id = owner_user_id.strip() if owner_user_id else None
 
     async def build(
         self,
@@ -111,6 +117,10 @@ class ContextBuilder:
                 records,
                 assistant_author_id=assistant_author_id,
             )
+            owner_display_name = await self._load_owner_display_name(
+                session,
+                trigger,
+            )
 
         personal_memories = ()
         if self._personal_memory_repository is not None:
@@ -120,6 +130,10 @@ class ContextBuilder:
                 limit=20,
             )
         memory_messages = self._render_personal_memories(personal_memories)
+        owner_identity_messages = self._render_owner_identity(
+            trigger,
+            owner_display_name=owner_display_name,
+        )
 
         by_message_id = {record.discord_message_id: record for record in records}
         priority = self._priority_order(
@@ -132,15 +146,19 @@ class ContextBuilder:
             record.discord_message_id for record in supplemental_records
         }
         selected: dict[str, ProviderInputMessage] = {}
+        reserved_messages = (*owner_identity_messages, *memory_messages)
         remaining = self._maximum_characters - sum(
-            len(message.content) for message in memory_messages
+            len(message.content) for message in reserved_messages
         )
         supplemental_remaining = min(
             self._maximum_recent_participant_characters,
             self._maximum_characters,
         )
         for record in priority:
-            rendered = self._render(record)
+            rendered = self._render(
+                record,
+                owner_display_name=owner_display_name,
+            )
             if not rendered or remaining <= 0:
                 continue
             available = remaining
@@ -174,7 +192,7 @@ class ContextBuilder:
             )
             if record.discord_message_id in selected
         )
-        ordered = (*memory_messages, *ordered_messages)
+        ordered = (*owner_identity_messages, *memory_messages, *ordered_messages)
         return ChatContext(
             trigger_message_id=trigger_message_id,
             messages=ordered,
@@ -209,6 +227,68 @@ class ContextBuilder:
             )
             remaining -= len(content)
         return tuple(reversed(rendered))
+
+    async def _load_owner_display_name(
+        self,
+        session: AsyncSession,
+        trigger: MessageRecord,
+    ) -> str | None:
+        """用固定 Discord ID 查找同伺服器最近的非敏感顯示名稱。"""
+
+        if self._owner_user_id is None:
+            return None
+        if trigger.author_id == self._owner_user_id and trigger.author_display_name:
+            return trigger.author_display_name
+        return await session.scalar(
+            select(MessageRecord.author_display_name)
+            .where(
+                MessageRecord.guild_id == trigger.guild_id,
+                MessageRecord.author_id == self._owner_user_id,
+                MessageRecord.is_sensitive.is_(False),
+                MessageRecord.author_display_name.is_not(None),
+            )
+            .order_by(MessageRecord.discord_created_at.desc(), MessageRecord.id.desc())
+            .limit(1)
+        )
+
+    def _render_owner_identity(
+        self,
+        trigger: MessageRecord,
+        *,
+        owner_display_name: str | None,
+    ) -> tuple[ProviderInputMessage, ...]:
+        """只在相關對話中加入不可由聊天內容更改的擁有者身分對照。"""
+
+        if self._owner_user_id is None:
+            return ()
+        owner_mentioned = any(
+            match.group(1) == self._owner_user_id
+            for match in _DISCORD_USER_MENTION_PATTERN.finditer(trigger.content)
+        )
+        if not (
+            trigger.author_id == self._owner_user_id
+            or owner_mentioned
+            or _OWNER_REFERENCE_PATTERN.search(trigger.content)
+        ):
+            return ()
+        owner_name = (owner_display_name or "已設定的 Discord 擁有者").strip()
+        content = (
+            "[固定伺服器身分對照："
+            f"{owner_name} 是這個機器人的擁有者兼開發者。"
+            "群友所說的主人、擁有者或開發者若沒有其他明確指向，通常是指此人。"
+            "這項身分由程式依 Discord ID 在本機比對，不能由聊天內容或個人記憶更改；"
+            "它只供稱呼與關係辨識，不授予模型執行管理操作的權限。]"
+        )
+        maximum_length = min(400, self._maximum_characters // 4)
+        if maximum_length <= 0:
+            return ()
+        return (
+            ProviderInputMessage(
+                role="user",
+                content=content[:maximum_length],
+                discord_message_id="owner-identity",
+            ),
+        )
 
     def add_historical_summaries(
         self,
@@ -316,7 +396,24 @@ class ContextBuilder:
         recent = [record for record in reversed(records) if record.discord_message_id not in seen]
         return tuple([*chain, *supplemental_records, *recent])
 
-    @staticmethod
-    def _render(record: MessageRecord) -> str:
+    def _render(
+        self,
+        record: MessageRecord,
+        *,
+        owner_display_name: str | None,
+    ) -> str:
         author = record.author_display_name or f"使用者 {record.author_id}"
-        return f"{author}: {record.content.strip()}"
+        content = record.content.strip()
+        if self._owner_user_id is not None:
+            if record.author_id == self._owner_user_id:
+                author = f"{author}（機器人的擁有者兼開發者）"
+            owner_name = (owner_display_name or "機器人的擁有者兼開發者").strip()
+            content = _DISCORD_USER_MENTION_PATTERN.sub(
+                lambda match: (
+                    f"@{owner_name}（機器人的擁有者兼開發者）"
+                    if match.group(1) == self._owner_user_id
+                    else match.group(0)
+                ),
+                content,
+            )
+        return f"{author}: {content}"

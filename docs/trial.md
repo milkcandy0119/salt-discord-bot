@@ -84,7 +84,7 @@ docker compose exec bot python -m app.trial_cli pause
 docker compose exec bot python -m app.trial_cli resume --confirmation "確認恢復階段 9 試跑"
 ```
 
-七天期滿或要提前結束：
+七天期滿或要提前結束，且希望停止新的付費 AI 呼叫：
 
 ```powershell
 docker compose exec bot python -m app.trial_cli finish --confirmation "確認結束階段 9 試跑"
@@ -93,3 +93,29 @@ docker compose exec bot python -m app.trial_cli report
 
 結束後不得恢復或重設基準，新付費預留維持停止。若未來要進行第二輪付費試跑，必須先設計
 新的階段與明確額度，不能直接清除資料表。
+
+## 進入正式運行
+
+若試跑結果可接受，使用本機固定確認文字封存試跑並進入正式運行：
+
+```powershell
+docker compose exec bot python -m app.trial_cli go-live --confirmation "確認結束階段 9 並進入正式運行"
+```
+
+`active`、`paused` 或已手動 `completed` 的試跑都可進入正式運行。成功後：
+
+- 狀態顯示為 `production`，試跑的實際結束時間與費用增量會固定保存。
+- 新的付費呼叫不再受試跑 US$1／US$0.25 增量限制。
+- 永久全域 US$10 與永久背景 US$3 上限仍然有效。
+- companion 不再受試跑每日 20 則上限限制，但原有免費判斷、冷卻及頻道規則仍有效。
+- 不會開始第二輪試跑，也不會刪除試跑報告、訊息或個人記憶。
+
+驗收：
+
+```powershell
+docker compose exec bot python -m app.trial_cli status
+docker compose exec bot python -m app.healthcheck
+```
+
+狀態應為 `production`，Bot 應保持 `healthy`。這個切換不可恢復成原試跑；執行前應先產生並
+驗證最新備份。

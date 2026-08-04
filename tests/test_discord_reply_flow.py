@@ -5,6 +5,7 @@ import pytest
 
 from app.ai.budget_manager import BudgetManager
 from app.ai.chat_service import ChatOutcome
+from app.ai.persona import Persona
 from app.bot.client import DiscordAssistantClient
 from app.bot.message_handler import IncomingMessage
 from app.config import Settings
@@ -34,6 +35,8 @@ class FakeDiscordMessage:
         self.sent_content: str | None = None
         self.mention_author: bool | None = None
         self.allowed_mentions: object | None = None
+        self.delivery_mode: str | None = None
+        self.channel = FakeDiscordChannel(self)
 
     async def reply(
         self,
@@ -45,6 +48,23 @@ class FakeDiscordMessage:
         self.sent_content = content
         self.mention_author = mention_author
         self.allowed_mentions = allowed_mentions
+        self.delivery_mode = "reply"
+        return FakeSentMessage()
+
+
+class FakeDiscordChannel:
+    def __init__(self, message: FakeDiscordMessage) -> None:
+        self._message = message
+
+    async def send(
+        self,
+        content: str,
+        *,
+        allowed_mentions: object,
+    ) -> FakeSentMessage:
+        self._message.sent_content = content
+        self._message.allowed_mentions = allowed_mentions
+        self._message.delivery_mode = "channel"
         return FakeSentMessage()
 
 
@@ -90,8 +110,10 @@ async def test_non_executed_memory_operations_receive_fixed_reply(
 
 
 @pytest.mark.asyncio
-async def test_successful_discord_reply_is_saved_with_reply_relationship(
+@pytest.mark.parametrize("reply_to_message", [True, False])
+async def test_successful_discord_message_preserves_actual_delivery_relationship(
     database: Database,
+    reply_to_message: bool,
 ) -> None:
     repository = MessageRepository(database.session_factory)
     segmenter = ConversationSegmenter(database.session_factory)
@@ -142,6 +164,12 @@ async def test_successful_discord_reply_is_saved_with_reply_relationship(
             maximum_characters=12_000,
         ),
         chat_service=chat_service,  # type: ignore[arg-type]
+        persona=Persona(
+            identifier="test",
+            version="v1",
+            display_name="測試機器人",
+            instructions="測試人設",
+        ),
         trial_repository=trial_repository,
     )
     client._connection.user = FakeClientUser()  # type: ignore[assignment]
@@ -162,22 +190,35 @@ async def test_successful_discord_reply_is_saved_with_reply_relationship(
     await client._send_ai_reply(  # noqa: SLF001
         discord_message,  # type: ignore[arg-type]
         incoming,
-        companion_generated=False,
+        companion_generated=not reply_to_message,
+        reply_to_message=reply_to_message,
     )
     stored = await repository.get_by_discord_id("200")
 
     assert discord_message.sent_content == "安全的測試回覆"
-    assert discord_message.mention_author is False
+    assert discord_message.delivery_mode == (
+        "reply" if reply_to_message else "channel"
+    )
+    assert discord_message.mention_author is (
+        False if reply_to_message else None
+    )
     assert stored is not None
     assert stored.is_bot is True
-    assert stored.replied_to_message_id == "100"
+    assert stored.replied_to_message_id == (
+        "100" if reply_to_message else None
+    )
     assert stored.segment_id is not None
     assert chat_service.received_context is not None
     report = await trial_repository.report()
+    expected_reason = (
+        "discord_reply_saved"
+        if reply_to_message
+        else "discord_channel_message_saved"
+    )
     assert report["event_counts"] == [
         {
             "event_type": "reply_result",
-            "reason": "discord_reply_saved",
+            "reason": expected_reason,
             "outcome": "generated",
             "count": 1,
         }
