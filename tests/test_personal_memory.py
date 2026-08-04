@@ -100,6 +100,45 @@ async def test_ordinary_chat_is_not_guessed_as_permanent_memory(database: Databa
 
 
 @pytest.mark.asyncio
+async def test_third_party_memory_request_is_not_saved(database: Database) -> None:
+    repository, service = _service(database)
+
+    outcome = await service.capture_explicit_message(
+        guild_id="1",
+        user_id="10",
+        message_id="102",
+        content="記住黃俊謀是臭企鵝",
+    )
+
+    assert outcome.status == "unsupported_memory_subject"
+    assert await repository.list_for_user(guild_id="1", user_id="10") == ()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_forget_request_does_not_delete_memory(database: Database) -> None:
+    repository, service = _service(database)
+    saved = await repository.create(
+        guild_id="1",
+        user_id="10",
+        content="我喜歡肉桂捲",
+        source_type="slash",
+        now=datetime(2026, 8, 4, tzinfo=UTC),
+    )
+
+    outcome = await service.capture_explicit_message(
+        guild_id="1",
+        user_id="10",
+        message_id="103",
+        content="忘記這件事",
+    )
+
+    assert outcome.status == "ambiguous_delete"
+    assert await repository.list_for_user(guild_id="1", user_id="10") == (
+        saved.memory,
+    )
+
+
+@pytest.mark.asyncio
 async def test_sensitive_memory_is_rejected_without_database_write(database: Database) -> None:
     repository, service = _service(database)
     secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"

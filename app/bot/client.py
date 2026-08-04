@@ -401,6 +401,8 @@ class DiscordAssistantClient(discord.Client):
             "duplicate",
             "invalid_content",
             "blocked_sensitive",
+            "ambiguous_delete",
+            "unsupported_memory_subject",
         }:
             await self._send_memory_event_reply(message, memory_outcome)
             return
@@ -469,6 +471,16 @@ class DiscordAssistantClient(discord.Client):
             content = f"這個已經記得了，編號是 #{memory_id}"
         elif outcome.status == "blocked_sensitive":
             content = "這段可能含敏感資料，Salt 不會把它存成記憶"
+        elif outcome.status == "ambiguous_delete":
+            content = (
+                "可以喵，不過 Salt 還不知道你指的是哪一筆\n"
+                "請先用 /memory view 查看編號，再使用 /memory delete"
+            )
+        elif outcome.status == "unsupported_memory_subject":
+            content = (
+                "這比較像群組稱號或別人的資料喵，目前 Salt 只能保存你自己的個人資料，"
+                "所以這次沒有存進記憶"
+            )
         else:
             content = "這段記憶太長或格式不完整，請改用 /memory set"
         try:

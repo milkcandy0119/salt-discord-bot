@@ -19,6 +19,18 @@ _EXPLICIT_MEMORY_PATTERN = re.compile(
     r"(?:記得|記住)\s*(?:一下\s*)?[，,：:]?\s*我(?P<fact>.+?)\s*[。.!！]?\s*$",
     re.IGNORECASE,
 )
+_MEMORY_REQUEST_PATTERN = re.compile(
+    r"^\s*(?:(?:請|拜託|你|salt|ソルト|<@!?\d+>)\s*){0,3}"
+    r"(?:記得|記住)\s*(?:一下\s*)?[，,：:]?\s*.+?[。.!！]?\s*$",
+    re.IGNORECASE,
+)
+_AMBIGUOUS_FORGET_PATTERN = re.compile(
+    r"^\s*(?:(?:請|拜託|你|salt|ソルト|<@!?\d+>)\s*){0,3}"
+    r"(?:忘記|不要再記得|刪除)\s*"
+    r"(?:這件事|這一件事|這個|剛剛那件事|剛才那件事|這筆記憶|記憶)?"
+    r"\s*[。.!！]?\s*$",
+    re.IGNORECASE,
+)
 
 
 class InvalidMemoryContentError(ValueError):
@@ -61,6 +73,10 @@ class PersonalMemoryService:
 
         match = _EXPLICIT_MEMORY_PATTERN.fullmatch(content)
         if match is None:
+            if _AMBIGUOUS_FORGET_PATTERN.fullmatch(content):
+                return MemoryCaptureOutcome("ambiguous_delete")
+            if _MEMORY_REQUEST_PATTERN.fullmatch(content):
+                return MemoryCaptureOutcome("unsupported_memory_subject")
             return MemoryCaptureOutcome("not_memory_event")
         fact = f"我{match.group('fact').strip()}"
         try:

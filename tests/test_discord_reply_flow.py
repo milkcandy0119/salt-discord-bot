@@ -10,6 +10,7 @@ from app.bot.message_handler import IncomingMessage
 from app.config import Settings
 from app.conversations.context_builder import ChatContext, ContextBuilder
 from app.conversations.segmenter import ConversationSegmenter
+from app.memory.personal_memory import MemoryCaptureOutcome
 from app.storage.database import Database
 from app.storage.repositories import MessageRepository, NewMessage
 
@@ -53,6 +54,38 @@ class FakeChatService:
     async def generate(self, context: ChatContext) -> ChatOutcome:
         self.received_context = context
         return ChatOutcome("generated", "安全的測試回覆")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (
+            "ambiguous_delete",
+            "可以喵，不過 Salt 還不知道你指的是哪一筆\n"
+            "請先用 /memory view 查看編號，再使用 /memory delete",
+        ),
+        (
+            "unsupported_memory_subject",
+            "這比較像群組稱號或別人的資料喵，目前 Salt 只能保存你自己的個人資料，"
+            "所以這次沒有存進記憶",
+        ),
+    ],
+)
+async def test_non_executed_memory_operations_receive_fixed_reply(
+    status: str,
+    expected: str,
+) -> None:
+    message = FakeDiscordMessage()
+
+    await DiscordAssistantClient._send_memory_event_reply(  # type: ignore[arg-type]  # noqa: SLF001
+        None,
+        message,
+        MemoryCaptureOutcome(status),
+    )
+
+    assert message.sent_content == expected
+    assert message.mention_author is False
 
 
 @pytest.mark.asyncio
