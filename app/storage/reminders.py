@@ -80,6 +80,11 @@ class ReminderRepository:
                 )
             )
 
+    async def has_timezone(self, *, guild_id: str, user_id: str) -> bool:
+        """提醒建立流程可用此方法分辨預設值與使用者明確設定。"""
+
+        return await self.get_timezone(guild_id=guild_id, user_id=user_id) is not None
+
     async def create(
         self,
         *,

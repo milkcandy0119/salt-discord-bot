@@ -63,6 +63,16 @@ class ReminderService:
             or self._default_timezone
         )
 
+    async def require_timezone(self, *, guild_id: str, user_id: str) -> str:
+        """提醒不得以系統預設時區取代使用者本人設定。"""
+
+        timezone_name = await self._repository.get_timezone(
+            guild_id=guild_id, user_id=user_id
+        )
+        if timezone_name is None:
+            raise InvalidReminderError("請先使用 /timezone set 設定你的提醒時區")
+        return timezone_name
+
     async def create(
         self,
         *,
@@ -82,7 +92,7 @@ class ReminderService:
             )
         if self._sensitive_filter.scan(cleaned).is_sensitive:
             raise SensitiveReminderError("提醒可能含敏感資料，未保存")
-        timezone_name = await self.get_timezone(
+        timezone_name = await self.require_timezone(
             guild_id=guild_id,
             user_id=user_id,
         )

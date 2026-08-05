@@ -63,7 +63,7 @@ def test_sqlite_snapshot_is_consistent_and_readable(
 
     with closing(sqlite3.connect(snapshot)) as connection:
         version = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert version == ("20260804_0008",)
+    assert version == ("20260805_0009",)
 
 
 def test_backup_rotates_only_after_restore_verification(

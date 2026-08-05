@@ -104,6 +104,7 @@ async def test_reminder_uses_user_timezone_and_is_owner_scoped(database: Databas
 async def test_reminder_rejects_past_invalid_and_sensitive_inputs(database: Database) -> None:
     _, service = _service(database)
     now = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
+    await service.set_timezone(guild_id="1", user_id="10", timezone_name="Asia/Taipei")
 
     with pytest.raises(InvalidReminderError, match="晚於目前時間"):
         await service.create(

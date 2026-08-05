@@ -27,6 +27,7 @@ class HistoricalSummary:
     segment_id: int
     content: str
     score: float
+    channel_id: str = ""
 
 
 class SQLiteVectorStore:
@@ -88,17 +89,21 @@ class SQLiteVectorStore:
         query_vector: tuple[float, ...],
         *,
         guild_id: str,
-        channel_id: str,
+        channel_id: str | None = None,
+        channel_ids: tuple[str, ...] | None = None,
         model_name: str,
         dimension: int,
         limit: int,
         exclude_segment_id: int | None = None,
     ) -> tuple[HistoricalSummary, ...]:
-        """只在相同伺服器與頻道內搜尋，且每個段落最多回傳一次。"""
+        """只在相同 guild 的可見頻道搜尋，且每個段落最多回傳一次。"""
 
         if len(query_vector) != dimension:
             raise ValueError("查詢向量維度與設定不符")
         if limit <= 0:
+            return ()
+        visible_channel_ids = channel_ids or ((channel_id,) if channel_id is not None else ())
+        if not visible_channel_ids:
             return ()
         query_norm = math.sqrt(sum(value * value for value in query_vector))
         if not math.isfinite(query_norm) or query_norm <= 0:
@@ -106,7 +111,7 @@ class SQLiteVectorStore:
 
         conditions = [
             ConversationSegmentRecord.guild_id == guild_id,
-            ConversationSegmentRecord.channel_id == channel_id,
+            ConversationSegmentRecord.channel_id.in_(visible_channel_ids),
             SummaryEmbeddingRecord.model_name == model_name,
             SummaryEmbeddingRecord.dimension == dimension,
         ]
@@ -121,6 +126,7 @@ class SQLiteVectorStore:
                         SegmentSummaryRecord.id,
                         SegmentSummaryRecord.segment_id,
                         SegmentSummaryRecord.content,
+                        ConversationSegmentRecord.channel_id,
                     )
                     .join(
                         SegmentSummaryRecord,
@@ -135,7 +141,7 @@ class SQLiteVectorStore:
             ).all()
 
         best_by_segment: dict[int, HistoricalSummary] = {}
-        for blob, vector_norm, summary_id, segment_id, content in rows:
+        for blob, vector_norm, summary_id, segment_id, content, source_channel_id in rows:
             candidate = array("f")
             candidate.frombytes(blob)
             if len(candidate) != dimension:
@@ -147,6 +153,7 @@ class SQLiteVectorStore:
                 best_by_segment[segment_id] = HistoricalSummary(
                     summary_id=summary_id,
                     segment_id=segment_id,
+                    channel_id=source_channel_id,
                     content=content,
                     score=score,
                 )
@@ -158,16 +165,21 @@ class SQLiteVectorStore:
         self,
         *,
         guild_id: str,
-        channel_id: str,
+        channel_id: str | None = None,
+        channel_ids: tuple[str, ...] | None = None,
         model_name: str,
         dimension: int,
         exclude_segment_id: int | None = None,
     ) -> bool:
-        """免費確認搜尋範圍內至少存在一筆向量，避免無效查詢費用。"""
+        """免費確認可見範圍內至少存在一筆向量，避免無效查詢費用。"""
+
+        visible_channel_ids = channel_ids or ((channel_id,) if channel_id is not None else ())
+        if not visible_channel_ids:
+            return False
 
         conditions = [
             ConversationSegmentRecord.guild_id == guild_id,
-            ConversationSegmentRecord.channel_id == channel_id,
+            ConversationSegmentRecord.channel_id.in_(visible_channel_ids),
             SummaryEmbeddingRecord.model_name == model_name,
             SummaryEmbeddingRecord.dimension == dimension,
         ]

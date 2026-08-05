@@ -10,6 +10,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.storage.memory_groups import ChannelAccessRepository
 from app.storage.models import MessageRecord
 from app.storage.personal_memories import PersonalMemory, PersonalMemoryRepository
 from app.storage.vector_store import HistoricalSummary
@@ -71,6 +72,7 @@ class ContextBuilder:
         personal_memory_repository: PersonalMemoryRepository | None = None,
         maximum_personal_memory_characters: int = 1_500,
         owner_user_id: str | None = None,
+        access_repository: ChannelAccessRepository | None = None,
     ) -> None:
         if maximum_characters <= 0:
             raise ValueError("最大上下文字元數必須大於零")
@@ -88,15 +90,12 @@ class ContextBuilder:
         self._maximum_characters = maximum_characters
         self._recent_participant_window = recent_participant_window
         self._recent_messages_per_participant = recent_messages_per_participant
-        self._maximum_recent_participant_characters = (
-            maximum_recent_participant_characters
-        )
+        self._maximum_recent_participant_characters = maximum_recent_participant_characters
         self._maximum_mentioned_participants = maximum_mentioned_participants
         self._personal_memory_repository = personal_memory_repository
-        self._maximum_personal_memory_characters = (
-            maximum_personal_memory_characters
-        )
+        self._maximum_personal_memory_characters = maximum_personal_memory_characters
         self._owner_user_id = owner_user_id.strip() if owner_user_id else None
+        self._access_repository = access_repository
 
     async def build(
         self,
@@ -108,9 +107,7 @@ class ContextBuilder:
 
         async with self._session_factory() as session:
             trigger = await session.scalar(
-                select(MessageRecord).where(
-                    MessageRecord.discord_message_id == trigger_message_id
-                )
+                select(MessageRecord).where(MessageRecord.discord_message_id == trigger_message_id)
             )
             if trigger is None:
                 raise LookupError("找不到觸發 AI 回覆的訊息")
@@ -133,6 +130,10 @@ class ContextBuilder:
                 trigger,
                 records,
                 assistant_author_id=assistant_author_id,
+            )
+            shared_group_records = await self._load_shared_group_records(
+                session,
+                trigger,
             )
             owner_display_name = await self._load_owner_display_name(
                 session,
@@ -157,11 +158,10 @@ class ContextBuilder:
             trigger,
             records,
             by_message_id,
-            supplemental_records,
+            (*supplemental_records, *shared_group_records),
         )
-        supplemental_ids = {
-            record.discord_message_id for record in supplemental_records
-        }
+        supplemental_ids = {record.discord_message_id for record in supplemental_records}
+        shared_group_ids = {record.discord_message_id for record in shared_group_records}
         selected: dict[str, ProviderInputMessage] = {}
         reserved_messages = (*owner_identity_messages, *memory_messages)
         remaining = self._maximum_characters - sum(
@@ -175,7 +175,11 @@ class ContextBuilder:
             rendered = self._render(
                 record,
                 owner_display_name=owner_display_name,
+                assistant_author_id=assistant_author_id,
+                is_trigger=record.discord_message_id == trigger.discord_message_id,
             )
+            if record.discord_message_id in shared_group_ids:
+                rendered = f"[共同記憶頻道的近期內容，僅供背景：{rendered}]"
             if not rendered or remaining <= 0:
                 continue
             available = remaining
@@ -185,11 +189,7 @@ class ContextBuilder:
                 available = min(available, supplemental_remaining)
             clipped = rendered[:available]
             selected[record.discord_message_id] = ProviderInputMessage(
-                role=(
-                    "assistant"
-                    if record.author_id == assistant_author_id
-                    else "user"
-                ),
+                role=("assistant" if record.author_id == assistant_author_id else "user"),
                 content=clipped,
                 discord_message_id=record.discord_message_id,
             )
@@ -199,7 +199,7 @@ class ContextBuilder:
 
         all_records = {
             record.discord_message_id: record
-            for record in (*records, *supplemental_records)
+            for record in (*records, *supplemental_records, *shared_group_records)
         }
         ordered_messages = tuple(
             selected[record.discord_message_id]
@@ -326,6 +326,7 @@ class ContextBuilder:
                 break
             rendered = (
                 "[相關歷史摘要，僅供理解背景，不代表目前對話："
+                f"來源頻道={summary.channel_id}；"
                 f"{summary.content.strip()}]"
             )
             clipped = rendered[:remaining]
@@ -365,9 +366,7 @@ class ContextBuilder:
                 break
             participant_ids.append(author_id)
 
-        segment_message_ids = {
-            record.discord_message_id for record in segment_records
-        }
+        segment_message_ids = {record.discord_message_id for record in segment_records}
         cutoff = trigger.discord_created_at - self._recent_participant_window
         supplemental: dict[str, MessageRecord] = {}
         for author_id in participant_ids:
@@ -391,6 +390,45 @@ class ContextBuilder:
                 if record.discord_message_id not in segment_message_ids:
                     supplemental.setdefault(record.discord_message_id, record)
         return tuple(supplemental.values())
+
+    async def _load_shared_group_records(
+        self,
+        session: AsyncSession,
+        trigger: MessageRecord,
+    ) -> tuple[MessageRecord, ...]:
+        """補入同一記憶分組其他頻道的近期非敏感訊息。
+
+        這是免費的短期橋接；較舊內容仍只透過已摘要的向量檢索提供，避免
+        將所有共同頻道完整聊天永久塞進每次模型輸入。
+        """
+
+        if self._access_repository is None:
+            return ()
+        visible_channel_ids = await self._access_repository.visible_channel_ids(
+            guild_id=trigger.guild_id,
+            channel_id=trigger.channel_id,
+        )
+        other_channel_ids = tuple(
+            channel_id for channel_id in visible_channel_ids if channel_id != trigger.channel_id
+        )
+        if not other_channel_ids:
+            return ()
+        cutoff = trigger.discord_created_at - self._recent_participant_window
+        records = (
+            await session.scalars(
+                select(MessageRecord)
+                .where(
+                    MessageRecord.guild_id == trigger.guild_id,
+                    MessageRecord.channel_id.in_(other_channel_ids),
+                    MessageRecord.is_sensitive.is_(False),
+                    MessageRecord.discord_created_at >= cutoff,
+                    MessageRecord.discord_created_at <= trigger.discord_created_at,
+                )
+                .order_by(MessageRecord.discord_created_at.desc(), MessageRecord.id.desc())
+                .limit(self._recent_messages_per_participant * 2)
+            )
+        ).all()
+        return tuple(records)
 
     @staticmethod
     def _priority_order(
@@ -418,9 +456,17 @@ class ContextBuilder:
         record: MessageRecord,
         *,
         owner_display_name: str | None,
+        assistant_author_id: str,
+        is_trigger: bool = False,
     ) -> str:
         author = record.author_display_name or f"使用者 {record.author_id}"
         content = record.content.strip()
+        content = _DISCORD_USER_MENTION_PATTERN.sub(
+            lambda match: (
+                "Salt（你自己）" if match.group(1) == assistant_author_id else match.group(0)
+            ),
+            content,
+        )
         if self._owner_user_id is not None:
             if record.author_id == self._owner_user_id:
                 author = f"{author}（機器人的擁有者兼開發者）"
@@ -433,4 +479,5 @@ class ContextBuilder:
                 ),
                 content,
             )
-        return f"{author}: {content}"
+        prefix = "[目前要回覆] " if is_trigger else ""
+        return f"{prefix}{author}: {content}"

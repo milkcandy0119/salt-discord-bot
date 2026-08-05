@@ -100,6 +100,80 @@ def test_recent_bot_participation_allows_conversation_continuation() -> None:
     assert decision.reason == "recent_bot_continuation"
 
 
+def test_single_user_can_reengage_companion_after_bot_is_no_longer_recent() -> None:
+    decision = make_policy().decide(
+        ChannelMode.COMPANION,
+        ReplySignals(
+            channel_id=20,
+            content="今天工作有點累",
+            recent_human_author_ids=frozenset({1}),
+            bot_spoke_recently=False,
+            now=NOW,
+        ),
+    )
+
+    assert decision.should_reply is True
+    assert decision.kind is TriggerKind.COMPANION
+    assert decision.reason == "idle_single_user_reengagement"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "https://tenor.com/view/example",
+        "<:breadcat:123456>",
+        "🐾💤……",
+    ],
+)
+def test_idle_reengagement_ignores_url_or_emoji_only_messages(content: str) -> None:
+    decision = make_policy().decide(
+        ChannelMode.COMPANION,
+        ReplySignals(
+            channel_id=20,
+            content=content,
+            recent_human_author_ids=frozenset({1}),
+            bot_spoke_recently=False,
+            now=NOW,
+        ),
+    )
+
+    assert decision.should_reply is False
+    assert decision.reason == "no_companion_signal"
+
+
+def test_idle_reengagement_still_respects_companion_cooldown() -> None:
+    decision = make_policy().decide(
+        ChannelMode.COMPANION,
+        ReplySignals(
+            channel_id=20,
+            content="我回來了",
+            recent_human_author_ids=frozenset({1}),
+            bot_spoke_recently=False,
+            last_companion_reply_at=NOW - timedelta(seconds=30),
+            now=NOW,
+        ),
+    )
+
+    assert decision.should_reply is False
+    assert decision.reason == "companion_cooldown"
+
+
+def test_recent_bot_does_not_turn_tenor_url_into_conversation() -> None:
+    decision = make_policy().decide(
+        ChannelMode.COMPANION,
+        ReplySignals(
+            channel_id=20,
+            content="https://tenor.com/view/example",
+            recent_human_author_ids=frozenset({1}),
+            bot_spoke_recently=True,
+            now=NOW,
+        ),
+    )
+
+    assert decision.should_reply is False
+    assert decision.reason == "no_companion_signal"
+
+
 def test_question_takes_priority_over_plain_conversation_continuation() -> None:
     decision = make_policy().decide(
         ChannelMode.COMPANION,

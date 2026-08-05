@@ -23,6 +23,7 @@ from app.security.sensitive_filter import SensitiveFilter
 from app.storage.admin_audit import AdminAuditRepository
 from app.storage.background_memory import BackgroundMemoryRepository
 from app.storage.database import Database, upgrade_database
+from app.storage.memory_groups import ChannelAccessRepository
 from app.storage.personal_memories import PersonalMemoryRepository
 from app.storage.reminders import ReminderRepository
 from app.storage.repositories import MessageRepository
@@ -55,9 +56,7 @@ def run(settings: Settings) -> int:
     if settings.openai_api_key is None:
         LOGGER.info("OpenAI 整合未設定；AI 觸發時只會使用固定維護訊息")
     else:
-        LOGGER.info(
-            "已偵測 OpenAI 憑證；只有通過頻道觸發、安全檢查與預算預留才會呼叫模型"
-        )
+        LOGGER.info("已偵測 OpenAI 憑證；只有通過頻道觸發、安全檢查與預算預留才會呼叫模型")
 
     return 0
 
@@ -68,6 +67,11 @@ async def run_discord(settings: Settings) -> int:
     await asyncio.to_thread(upgrade_database, settings.database_url)
     database = Database(settings.database_url)
     repository = MessageRepository(database.session_factory)
+    channel_access_repository = ChannelAccessRepository(database.session_factory)
+    await channel_access_repository.seed_allowlist(
+        guild_ids=settings.allowed_guild_ids,
+        channel_ids=settings.allowed_channel_ids,
+    )
     personal_memory_repository = PersonalMemoryRepository(database.session_factory)
     reminder_repository = ReminderRepository(database.session_factory)
     admin_audit_repository = AdminAuditRepository(database.session_factory)
@@ -96,9 +100,7 @@ async def run_discord(settings: Settings) -> int:
         price=ModelPrice(
             model_name=settings.ai_chat_model,
             price_version=settings.ai_chat_price_version,
-            input_microusd_per_million_tokens=(
-                settings.ai_chat_input_microusd_per_million_tokens
-            ),
+            input_microusd_per_million_tokens=(settings.ai_chat_input_microusd_per_million_tokens),
             output_microusd_per_million_tokens=(
                 settings.ai_chat_output_microusd_per_million_tokens
             ),
@@ -110,58 +112,35 @@ async def run_discord(settings: Settings) -> int:
         reasoning_effort=settings.ai_chat_reasoning_effort,
         vision_service=VisionService(
             enabled=settings.ai_vision_enabled,
-            maximum_images_per_message=(
-                settings.ai_vision_max_images_per_message
-            ),
+            maximum_images_per_message=(settings.ai_vision_max_images_per_message),
             maximum_download_bytes=settings.ai_vision_max_download_bytes,
             maximum_pixels=settings.ai_vision_max_pixels,
-            download_timeout_seconds=(
-                settings.ai_vision_download_timeout_seconds
-            ),
+            download_timeout_seconds=(settings.ai_vision_download_timeout_seconds),
             detail=settings.ai_vision_detail,
             maximum_dimension=settings.ai_vision_max_dimension,
-            maximum_animations_per_message=(
-                settings.ai_vision_max_animations_per_message
-            ),
-            maximum_frames_per_animation=(
-                settings.ai_vision_max_frames_per_animation
-            ),
+            maximum_animations_per_message=(settings.ai_vision_max_animations_per_message),
+            maximum_frames_per_animation=(settings.ai_vision_max_frames_per_animation),
             maximum_animation_frames=settings.ai_vision_max_animation_frames,
-            maximum_animation_total_pixels=(
-                settings.ai_vision_max_animation_total_pixels
-            ),
+            maximum_animation_total_pixels=(settings.ai_vision_max_animation_total_pixels),
             animation_processing_timeout_seconds=(
                 settings.ai_vision_animation_processing_timeout_seconds
             ),
-            maximum_animation_duration_seconds=(
-                settings.ai_vision_max_animation_duration_seconds
-            ),
-            animation_duplicate_threshold=(
-                settings.ai_vision_animation_duplicate_threshold
-            ),
+            maximum_animation_duration_seconds=(settings.ai_vision_max_animation_duration_seconds),
+            animation_duplicate_threshold=(settings.ai_vision_animation_duplicate_threshold),
         ),
-        maximum_reserved_tokens_per_image=(
-            settings.ai_vision_max_reserved_tokens_per_image
-        ),
+        maximum_reserved_tokens_per_image=(settings.ai_vision_max_reserved_tokens_per_image),
     )
     context_builder = ContextBuilder(
         database.session_factory,
         maximum_characters=settings.ai_chat_max_context_characters,
-        recent_participant_window=timedelta(
-            minutes=settings.ai_recent_participant_context_minutes
-        ),
-        recent_messages_per_participant=(
-            settings.ai_recent_messages_per_participant
-        ),
-        maximum_recent_participant_characters=(
-            settings.ai_recent_participant_context_characters
-        ),
+        recent_participant_window=timedelta(minutes=settings.ai_recent_participant_context_minutes),
+        recent_messages_per_participant=(settings.ai_recent_messages_per_participant),
+        maximum_recent_participant_characters=(settings.ai_recent_participant_context_characters),
         maximum_mentioned_participants=settings.ai_max_mentioned_participants,
         personal_memory_repository=personal_memory_repository,
-        maximum_personal_memory_characters=(
-            settings.ai_personal_memory_context_characters
-        ),
+        maximum_personal_memory_characters=(settings.ai_personal_memory_context_characters),
         owner_user_id=str(settings.owner_user_id),
+        access_repository=channel_access_repository,
     )
     segmenter = ConversationSegmenter(
         database.session_factory,
@@ -204,9 +183,7 @@ async def run_discord(settings: Settings) -> int:
             sensitive_filter=SensitiveFilter(),
             dimensions=settings.ai_embedding_dimensions,
             chunk_characters=settings.ai_embedding_chunk_characters,
-            chunk_overlap_characters=(
-                settings.ai_embedding_chunk_overlap_characters
-            ),
+            chunk_overlap_characters=(settings.ai_embedding_chunk_overlap_characters),
         )
         summary_service = SummaryService(
             provider=summary_provider,
@@ -231,12 +208,8 @@ async def run_discord(settings: Settings) -> int:
             summary_service=summary_service,
             embedding_service=embedding_service,
             stale_after=timedelta(minutes=settings.background_job_stale_minutes),
-            retry_base_delay=timedelta(
-                seconds=settings.background_job_retry_base_seconds
-            ),
-            budget_retry_after=timedelta(
-                minutes=settings.background_job_budget_retry_minutes
-            ),
+            retry_base_delay=timedelta(seconds=settings.background_job_retry_base_seconds),
+            budget_retry_after=timedelta(minutes=settings.background_job_budget_retry_minutes),
             maximum_jobs_per_run=settings.background_job_max_per_run,
         )
         history_retriever = HistoricalContextRetriever(
@@ -246,6 +219,7 @@ async def run_discord(settings: Settings) -> int:
             model_name=settings.ai_embedding_model,
             dimensions=settings.ai_embedding_dimensions,
             result_limit=settings.ai_history_result_limit,
+            access_repository=channel_access_repository,
         )
     client = DiscordAssistantClient(
         settings=settings,
@@ -263,6 +237,7 @@ async def run_discord(settings: Settings) -> int:
         reminder_repository=reminder_repository,
         admin_audit_repository=admin_audit_repository,
         trial_repository=trial_repository,
+        channel_access_repository=channel_access_repository,
     )
     try:
         async with client:

@@ -5,6 +5,7 @@ import pytest
 from app.conversations.context_builder import ContextBuilder
 from app.conversations.segmenter import ConversationSegmenter
 from app.storage.database import Database
+from app.storage.memory_groups import ChannelAccessRepository
 from app.storage.personal_memories import PersonalMemoryRepository
 from app.storage.repositories import MessageRepository, NewMessage
 from app.storage.vector_store import HistoricalSummary
@@ -24,12 +25,13 @@ async def save_message(
     is_bot: bool = False,
     is_sensitive: bool = False,
     display_name: str | None = None,
+    channel_id: str = "2",
 ) -> None:
     await repository.save(
         NewMessage(
             discord_message_id=message_id,
             guild_id="1",
-            channel_id="2",
+            channel_id=channel_id,
             author_id=author_id,
             author_display_name=(
                 display_name
@@ -306,10 +308,52 @@ async def test_mentioned_participant_recent_fact_is_added_without_merging_segmen
         maximum_characters=1_000,
     ).build("siao-ask", assistant_author_id="999")
 
-    assert "milk-fact" in {
-        message.discord_message_id for message in context.messages
-    }
+    assert "milk-fact" in {message.discord_message_id for message in context.messages}
     assert "肉桂捲" in " ".join(message.content for message in context.messages)
+
+
+@pytest.mark.asyncio
+async def test_recent_messages_from_shared_group_are_available_across_channels(
+    database: Database,
+) -> None:
+    repository = MessageRepository(database.session_factory)
+    segmenter = ConversationSegmenter(database.session_factory)
+    access = ChannelAccessRepository(database.session_factory)
+    for channel_id in ("2", "3"):
+        await access.add_allowed(guild_id="1", channel_id=channel_id)
+    await access.create_group(guild_id="1", name="共同記憶")
+    await access.add_channel(guild_id="1", group_name="共同記憶", channel_id="2")
+    await access.add_channel(guild_id="1", group_name="共同記憶", channel_id="3")
+    await save_message(
+        repository,
+        segmenter,
+        message_id="shared-fact",
+        author_id="1",
+        content="XXX 是遊戲大師",
+        minute=0,
+        channel_id="2",
+    )
+    await save_message(
+        repository,
+        segmenter,
+        message_id="shared-question",
+        author_id="1",
+        content="誰是遊戲大師？",
+        minute=1,
+        channel_id="3",
+    )
+
+    context = await ContextBuilder(
+        database.session_factory,
+        maximum_characters=1_000,
+        access_repository=access,
+    ).build("shared-question", assistant_author_id="999")
+
+    shared = next(
+        message for message in context.messages if message.discord_message_id == "shared-fact"
+    )
+    assert "XXX 是遊戲大師" in shared.content
+    assert shared.content.startswith("[共同記憶頻道的近期內容")
 
 
 @pytest.mark.asyncio
@@ -444,9 +488,7 @@ async def test_recent_participant_context_has_independent_character_limit(
         maximum_recent_participant_characters=20,
     ).build("ask", assistant_author_id="999")
     supplemental = next(
-        message
-        for message in context.messages
-        if message.discord_message_id == "other-fact"
+        message for message in context.messages if message.discord_message_id == "other-fact"
     )
 
     assert len(supplemental.content) == 20
@@ -486,3 +528,40 @@ async def test_historical_summaries_are_temporary_and_respect_remaining_limit(
     assert enriched.messages[0].discord_message_id == "historical-summary:7"
     assert "肉桂捲" in enriched.messages[0].content
     assert enriched.character_count <= 100
+
+
+@pytest.mark.asyncio
+async def test_trigger_is_marked_and_bot_mention_is_normalized(
+    database: Database,
+) -> None:
+    repository = MessageRepository(database.session_factory)
+    segmenter = ConversationSegmenter(database.session_factory)
+    await save_message(
+        repository,
+        segmenter,
+        message_id="previous",
+        author_id="1",
+        content="previous question",
+        minute=0,
+    )
+    await save_message(
+        repository,
+        segmenter,
+        message_id="trigger",
+        author_id="1",
+        content="<@999> answer only this message",
+        minute=1,
+        replied_to="previous",
+    )
+
+    context = await ContextBuilder(
+        database.session_factory,
+        maximum_characters=1_000,
+    ).build("trigger", assistant_author_id="999")
+
+    trigger = next(
+        message for message in context.messages if message.discord_message_id == "trigger"
+    )
+    assert "<@999>" not in trigger.content
+    assert "Salt（你自己）" in trigger.content
+    assert trigger.content.startswith("[目前要回覆]")

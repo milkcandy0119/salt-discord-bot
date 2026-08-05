@@ -13,6 +13,7 @@ from app.ai.budget_manager import BudgetManager, BudgetSnapshot
 from app.ai.chat_service import ChatService
 from app.ai.persona import Persona
 from app.bot.admin_commands import BotAdminCommandGroup
+from app.bot.admin_memory_commands import AdminMemoryCommandGroup
 from app.bot.channel_modes import (
     ChannelMode,
     ChannelModeResolver,
@@ -37,6 +38,7 @@ from app.reminders.service import ReminderService
 from app.security.sensitive_filter import SensitiveFilter
 from app.storage.admin_audit import AdminAuditRepository
 from app.storage.background_memory import BackgroundMemoryRepository
+from app.storage.memory_groups import ChannelAccessRepository
 from app.storage.reminders import ReminderRepository
 from app.storage.repositories import MessageRepository, NewMessage
 from app.storage.trial import TrialRepository
@@ -134,6 +136,7 @@ class DiscordAssistantClient(discord.Client):
         reminder_repository: ReminderRepository | None = None,
         admin_audit_repository: AdminAuditRepository | None = None,
         trial_repository: TrialRepository | None = None,
+        channel_access_repository: ChannelAccessRepository | None = None,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -153,14 +156,13 @@ class DiscordAssistantClient(discord.Client):
         self._reminder_repository = reminder_repository
         self._admin_audit_repository = admin_audit_repository
         self._trial_repository = trial_repository
+        self._channel_access_repository = channel_access_repository
         self._reminder_dispatcher = (
             ReminderDispatcher(
                 repository=reminder_repository,
                 sender=DiscordReminderSender(self),
                 stale_after=timedelta(minutes=settings.reminder_stale_minutes),
-                retry_base_delay=timedelta(
-                    seconds=settings.reminder_retry_base_seconds
-                ),
+                retry_base_delay=timedelta(seconds=settings.reminder_retry_base_seconds),
                 maximum_per_run=settings.reminder_max_per_run,
             )
             if reminder_repository is not None
@@ -185,6 +187,7 @@ class DiscordAssistantClient(discord.Client):
             segmenter=segmenter,
             allowed_guild_ids=settings.allowed_guild_ids,
             allowed_channel_ids=settings.allowed_channel_ids,
+            access_repository=channel_access_repository,
         )
         self.tree = discord.app_commands.CommandTree(self)
         self.tree.add_command(
@@ -236,6 +239,16 @@ class DiscordAssistantClient(discord.Client):
                     allowed_guild_ids=settings.allowed_guild_ids,
                     admin_user_ids=settings.sensitive_notification_user_ids,
                     trial_repository=trial_repository,
+                ),
+                guilds=guilds,
+            )
+        if channel_access_repository is not None and admin_audit_repository is not None:
+            self.tree.add_command(
+                AdminMemoryCommandGroup(
+                    repository=channel_access_repository,
+                    audit_repository=admin_audit_repository,
+                    allowed_guild_ids=settings.allowed_guild_ids,
+                    admin_user_ids=settings.sensitive_notification_user_ids,
                 ),
                 guilds=guilds,
             )
@@ -527,11 +540,7 @@ class DiscordAssistantClient(discord.Client):
     ) -> None:
         """以固定免費文字確認記憶事件，避免再呼叫聊天模型。"""
 
-        memory_id = (
-            outcome.save_result.memory.id
-            if outcome.save_result is not None
-            else None
-        )
+        memory_id = outcome.save_result.memory.id if outcome.save_result is not None else None
         if outcome.status == "created":
             content = f"記住了喵，記憶編號是 #{memory_id}"
         elif outcome.status == "duplicate":
@@ -580,8 +589,7 @@ class DiscordAssistantClient(discord.Client):
             replied_to_bot=await self._is_reply_to_this_bot(message, incoming),
             is_command=self._is_ai_command(incoming.content),
             has_visual=(
-                self._settings.ai_vision_enabled
-                and incoming.has_processable_visual_candidate
+                self._settings.ai_vision_enabled and incoming.has_processable_visual_candidate
             ),
             now=datetime.now(UTC),
         )
@@ -655,9 +663,7 @@ class DiscordAssistantClient(discord.Client):
             str(incoming.channel_id),
             since=now - longest_window,
         )
-        human_cutoff = now - timedelta(
-            seconds=self._settings.companion_activity_window_seconds
-        )
+        human_cutoff = now - timedelta(seconds=self._settings.companion_activity_window_seconds)
         bot_cutoff = now - longest_window
         human_ids = frozenset(
             int(record.author_id)
@@ -675,14 +681,11 @@ class DiscordAssistantClient(discord.Client):
                 channel_id=incoming.channel_id,
                 content=incoming.content,
                 has_visual=(
-                    self._settings.ai_vision_enabled
-                    and incoming.has_processable_visual_candidate
+                    self._settings.ai_vision_enabled and incoming.has_processable_visual_candidate
                 ),
                 recent_human_author_ids=human_ids,
                 bot_spoke_recently=bot_spoke_recently,
-                last_companion_reply_at=self._last_companion_reply_at.get(
-                    incoming.channel_id
-                ),
+                last_companion_reply_at=self._last_companion_reply_at.get(incoming.channel_id),
                 now=now,
             ),
         )
@@ -705,9 +708,7 @@ class DiscordAssistantClient(discord.Client):
                 )
                 if slot in {"inactive", "daily_limit", "outside_scope"}:
                     await self._record_trial_event(
-                        idempotency_key=(
-                            f"companion_limit:{incoming.discord_message_id}"
-                        ),
+                        idempotency_key=(f"companion_limit:{incoming.discord_message_id}"),
                         event_type="reply_blocked",
                         incoming=incoming,
                         channel_mode=ChannelMode.COMPANION.value,
@@ -845,11 +846,7 @@ class DiscordAssistantClient(discord.Client):
             incoming=incoming,
             channel_mode=("companion" if companion_generated else "normal"),
             trigger_kind=trigger_kind,
-            reason=(
-                "discord_reply_saved"
-                if reply_to_message
-                else "discord_channel_message_saved"
-            ),
+            reason=("discord_reply_saved" if reply_to_message else "discord_channel_message_saved"),
             outcome=outcome.status,
             latency_ms=round((perf_counter() - started_at) * 1_000),
         )

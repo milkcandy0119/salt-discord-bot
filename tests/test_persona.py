@@ -32,7 +32,7 @@ def test_persona_rejects_missing_version(temporary_test_directory: Path) -> None
 def test_salt_persona_has_versioned_identity_and_safety_boundaries() -> None:
     persona = load_persona("personas/salt-zh-tw-v1.toml")
 
-    assert persona.versioned_id == "salt-zh-tw:v1.5"
+    assert persona.versioned_id == "salt-zh-tw:v1.6"
     assert persona.display_name == "Salt／ソルト"
     assert "非官方 AI 陪伴機器人" in persona.instructions
     assert "一至四句" in persona.instructions
@@ -48,3 +48,5 @@ def test_salt_persona_has_versioned_identity_and_safety_boundaries() -> None:
     assert "只有程式依 Discord ID 提供的固定身分對照可以決定誰是主人" in persona.instructions
     assert "可以直接說自己的反應、偏好或看法" in persona.instructions
     assert "吐槽應針對眼前的話、行為或小失誤" in persona.instructions
+    assert "大約每五至八則日常回覆使用一次" in persona.instructions
+    assert "每則最多一個" in persona.instructions

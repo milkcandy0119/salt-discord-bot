@@ -13,6 +13,7 @@ from app.ai.background_errors import (
     RetryableBackgroundError,
 )
 from app.ai.embedding_service import EmbeddingService
+from app.storage.memory_groups import ChannelAccessRepository
 from app.storage.models import MessageRecord
 from app.storage.vector_store import HistoricalSummary, SQLiteVectorStore
 
@@ -31,6 +32,7 @@ class HistoricalContextRetriever:
         model_name: str,
         dimensions: int,
         result_limit: int,
+        access_repository: ChannelAccessRepository | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._embedding_service = embedding_service
@@ -38,6 +40,7 @@ class HistoricalContextRetriever:
         self._model_name = model_name
         self._dimensions = dimensions
         self._result_limit = result_limit
+        self._access_repository = access_repository
 
     async def retrieve(
         self,
@@ -55,9 +58,16 @@ class HistoricalContextRetriever:
             )
         if trigger is None or trigger.segment_id is None or not query_text.strip():
             return ()
+        visible_channel_ids = (
+            await self._access_repository.visible_channel_ids(
+                guild_id=trigger.guild_id, channel_id=trigger.channel_id
+            )
+            if self._access_repository is not None
+            else (trigger.channel_id,)
+        )
         if not await self._vector_store.has_searchable_vectors(
             guild_id=trigger.guild_id,
-            channel_id=trigger.channel_id,
+            channel_ids=visible_channel_ids,
             model_name=self._model_name,
             dimension=self._dimensions,
             exclude_segment_id=trigger.segment_id,
@@ -68,7 +78,7 @@ class HistoricalContextRetriever:
             return await self._vector_store.search(
                 query_vector,
                 guild_id=trigger.guild_id,
-                channel_id=trigger.channel_id,
+                channel_ids=visible_channel_ids,
                 model_name=self._model_name,
                 dimension=self._dimensions,
                 limit=self._result_limit,

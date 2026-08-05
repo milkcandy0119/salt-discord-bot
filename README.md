@@ -104,8 +104,9 @@ Commands；它們只允許在伺服器內使用，不開放私訊：
   不會對每則訊息直接呼叫 AI。
 - 陪伴模式的非明確觸發會等待頻道安靜 5 秒；有新訊息便重新計時。提及、回覆機器人及指令
   不需要等待。
-- 陪伴模式在多位真人密集交談時不插話；預設只回應問題／求助，或延續機器人最近參與的
-  對話，自動回覆成功後冷卻 120 秒。
+- 陪伴模式在多位真人密集交談時不插話；會回應問題／求助、延續機器人最近參與的對話，
+  或在 Salt 超過最近參與時間後，由單一真人的一句自然文字重新喚醒。純網址、單純 Emoji
+  與 Discord 標記不會重新喚醒；自動回覆成功後冷卻 120 秒。
 - 明確提問、提及、回覆機器人或指令會使用 Discord 回覆；Salt 自動加入日常話題、發表看法
   或接梗時改用一般頻道訊息，不把每次參與都掛在某一位成員的訊息下面。
 - 第一版只在有人發言後判斷是否回覆，不會在無人發言時主動開啟話題，也不使用付費模型
@@ -308,6 +309,22 @@ FROM paid_ai_calls ORDER BY created_at DESC LIMIT 20;
 SELECT threshold_percent, status, attempts, sent_at
 FROM budget_threshold_notifications ORDER BY threshold_percent;
 ```
+
+## 持久化白名單與跨頻道記憶範圍
+
+擁有者及 `DISCORD_ADMIN_USER_IDS` 指定管理員可在白名單伺服器使用以下私密指令：
+
+- `/admin allowlist list|add|remove`：查看或即時修改可接收訊息的文字頻道。首次啟動時才會把
+  `.env` 的頻道清單移入資料庫；此後管理員移除的頻道不會在重啟後自動恢復。
+- `/admin memory-group list|create|edit|delete` 與
+  `/admin memory-group add-channel|remove-channel`：將已允許的頻道組成一個歷史記憶範圍。
+  未分組頻道只查詢自己的歷史；同組頻道才可互相查詢摘要。
+- `/admin allowlist sync`：只提供受控歷史同步的提示與稽核。歷史同步需先以
+  `app.history_cli analyze` 免費估價，再使用明確確認字串與成本上限執行
+  `import-history`；因此這個 Slash Command 不會意外讀取大量歷史或產生 OpenAI 費用。
+
+所有管理操作都採 ephemeral 回覆並留下不含訊息內容的稽核紀錄。移除白名單或刪除分組不會刪除
+既有 Discord 訊息、SQLite 原始資料、摘要或向量。
 
 ## 敏感資料政策
 

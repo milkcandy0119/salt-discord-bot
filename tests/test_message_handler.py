@@ -10,6 +10,8 @@ from app.bot.message_handler import (
     SensitiveNotice,
 )
 from app.security.sensitive_filter import SensitiveFilter
+from app.storage.database import Database
+from app.storage.memory_groups import ChannelAccessRepository
 from app.storage.repositories import MessageRepository
 
 
@@ -96,6 +98,26 @@ async def test_non_whitelisted_message_is_not_saved(
 
     assert outcome.status == "ignored_not_allowed"
     assert await message_repository.count() == 0
+
+
+@pytest.mark.asyncio
+async def test_persistent_allowlist_takes_effect_without_restart(
+    database: Database, message_repository: MessageRepository
+) -> None:
+    access = ChannelAccessRepository(database.session_factory)
+    handler = MessageHandler(
+        repository=message_repository,
+        sensitive_filter=SensitiveFilter(),
+        notifier=FakeNotifier(),
+        segmenter=FakeSegmenter(),
+        allowed_guild_ids=frozenset({1}),
+        allowed_channel_ids=frozenset(),
+        access_repository=access,
+    )
+
+    assert (await handler.handle(make_incoming_message())).status == "ignored_not_allowed"
+    await access.add_allowed(guild_id="1", channel_id="2")
+    assert (await handler.handle(make_incoming_message())).status == "stored"
 
 
 @pytest.mark.asyncio

@@ -83,6 +83,13 @@ class ReplyTriggerPolicy:
     _VISUAL_ENGAGEMENT_PATTERN = re.compile(
         r"(?:你看|看看|看這個|看這張|這張|這是什麼|好看嗎|覺得如何)"
     )
+    _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+    _DISCORD_MARKUP_PATTERN = re.compile(
+        r"<@!?\d+>|<a?:[A-Za-z0-9_]{2,32}:\d+>"
+    )
+    _CONVERSATIONAL_CHARACTER_PATTERN = re.compile(
+        r"[A-Za-z0-9_\u3040-\u30ff\u3400-\u9fff]"
+    )
 
     def __init__(self, *, companion_cooldown: timedelta) -> None:
         if companion_cooldown < timedelta(0):
@@ -115,8 +122,18 @@ class ReplyTriggerPolicy:
             signals.bot_spoke_recently or self._VISUAL_ENGAGEMENT_PATTERN.search(content)
         ):
             return TriggerDecision(True, TriggerKind.COMPANION, "visual_conversation_signal")
-        if signals.bot_spoke_recently and len(content) >= 2:
+        if signals.bot_spoke_recently and self._has_conversational_text(content):
             return TriggerDecision(True, TriggerKind.COMPANION, "recent_bot_continuation")
+        if (
+            not signals.bot_spoke_recently
+            and len(signals.recent_human_author_ids) == 1
+            and self._has_conversational_text(content)
+        ):
+            return TriggerDecision(
+                True,
+                TriggerKind.COMPANION,
+                "idle_single_user_reengagement",
+            )
         return TriggerDecision(False, TriggerKind.NONE, "no_companion_signal")
 
     @staticmethod
@@ -133,3 +150,12 @@ class ReplyTriggerPolicy:
         if signals.last_companion_reply_at is None:
             return False
         return signals.now - signals.last_companion_reply_at < self._companion_cooldown
+
+    @classmethod
+    def _has_conversational_text(cls, content: str) -> bool:
+        """排除純網址、Discord 標記與符號，避免把連結預覽當成自然招呼。"""
+
+        without_urls = cls._URL_PATTERN.sub("", content)
+        without_markup = cls._DISCORD_MARKUP_PATTERN.sub("", without_urls)
+        meaningful = cls._CONVERSATIONAL_CHARACTER_PATTERN.findall(without_markup)
+        return len(meaningful) >= 2

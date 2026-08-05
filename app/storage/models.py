@@ -114,6 +114,74 @@ class UserTimezoneRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ChannelAllowlistRecord(Base):
+    """由管理員管理、重啟後仍有效的頻道接收白名單。"""
+
+    __tablename__ = "channel_allowlists"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "channel_id", name="uq_channel_allowlist"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    guild_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    channel_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryGroupRecord(Base):
+    """同一 guild 內可共享歷史檢索範圍的記憶分組。"""
+
+    __tablename__ = "memory_groups"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "name", name="uq_memory_group_guild_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    guild_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryGroupChannelRecord(Base):
+    """記憶分組與 Discord 頻道的關聯；一個頻道至多一組。"""
+
+    __tablename__ = "memory_group_channels"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "channel_id", name="uq_memory_group_channel"),
+        UniqueConstraint("group_id", "channel_id", name="uq_memory_group_member"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_groups.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    guild_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    channel_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PendingActionRecord(Base):
+    """需由原使用者確認後才能執行的自然語言動作。"""
+
+    __tablename__ = "pending_actions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    guild_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    channel_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    action_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    parsed_parameters: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ReminderRecord(Base):
     """可在重啟後恢復並以私訊派送的使用者提醒。"""
 

@@ -9,13 +9,12 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from app.security.sensitive_filter import SensitiveFilter
+from app.storage.memory_groups import ChannelAccessRepository
 from app.storage.repositories import MessageRepository, NewMessage
 from app.vision.models import IncomingVisual, VisualMediaKind
 
 LOGGER = logging.getLogger(__name__)
-_DISCORD_VISUAL_MARKUP = re.compile(
-    r"<@!?\d+>|<a?:[A-Za-z0-9_]{2,32}:\d+>"
-)
+_DISCORD_VISUAL_MARKUP = re.compile(r"<@!?\d+>|<a?:[A-Za-z0-9_]{2,32}:\d+>")
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,9 +65,7 @@ def compose_stored_content(
         normalized = " ".join(name.split())[:100]
         if normalized and normalized not in normalized_names:
             normalized_names.append(normalized)
-    metadata_lines = [
-        f"[Discord 貼圖名稱：{name}]" for name in normalized_names
-    ]
+    metadata_lines = [f"[Discord 貼圖名稱：{name}]" for name in normalized_names]
     seen_resources: set[tuple[VisualMediaKind, str]] = set()
     for visual in visual_inputs:
         resource_key = (visual.media_kind, visual.resource_id)
@@ -142,6 +139,7 @@ class MessageHandler:
         segmenter: SegmentAssigner,
         allowed_guild_ids: frozenset[int],
         allowed_channel_ids: frozenset[int],
+        access_repository: ChannelAccessRepository | None = None,
     ) -> None:
         self._repository = repository
         self._sensitive_filter = sensitive_filter
@@ -149,15 +147,21 @@ class MessageHandler:
         self._segmenter = segmenter
         self._allowed_guild_ids = allowed_guild_ids
         self._allowed_channel_ids = allowed_channel_ids
+        self._access_repository = access_repository
 
     async def handle(self, message: IncomingMessage) -> HandlingOutcome:
         """處理一則事件；外部通知只會收到已移除內容的資料物件。"""
 
-        if (
-            message.guild_id is None
-            or message.guild_id not in self._allowed_guild_ids
-            or message.channel_id not in self._allowed_channel_ids
-        ):
+        if message.guild_id is None or message.guild_id not in self._allowed_guild_ids:
+            return HandlingOutcome("ignored_not_allowed")
+        allowed = (
+            await self._access_repository.is_allowed(
+                guild_id=str(message.guild_id), channel_id=str(message.channel_id)
+            )
+            if self._access_repository is not None
+            else message.channel_id in self._allowed_channel_ids
+        )
+        if not allowed:
             return HandlingOutcome("ignored_not_allowed")
         if message.is_own_message:
             return HandlingOutcome("ignored_own_message")
@@ -169,9 +173,7 @@ class MessageHandler:
         )
         content_scan = self._sensitive_filter.scan(stored_content)
         display_name_scan = self._sensitive_filter.scan(message.author_display_name or "")
-        categories = tuple(
-            dict.fromkeys((*content_scan.categories, *display_name_scan.categories))
-        )
+        categories = tuple(dict.fromkeys((*content_scan.categories, *display_name_scan.categories)))
         is_sensitive = bool(categories)
         save_result = await self._repository.save(
             NewMessage(
