@@ -565,3 +565,81 @@ async def test_trigger_is_marked_and_bot_mention_is_normalized(
     assert "<@999>" not in trigger.content
     assert "Salt（你自己）" in trigger.content
     assert trigger.content.startswith("[目前要回覆]")
+
+
+@pytest.mark.asyncio
+async def test_recent_channel_context_keeps_multi_person_topic_without_merging_segments(
+    database: Database,
+) -> None:
+    repository = MessageRepository(database.session_factory)
+    segmenter = ConversationSegmenter(database.session_factory)
+    await save_message(
+        repository,
+        segmenter,
+        message_id="alice-topic",
+        author_id="1",
+        content="小明今天帶了草莓蛋糕。",
+        minute=0,
+    )
+    await save_message(
+        repository,
+        segmenter,
+        message_id="bob-reaction",
+        author_id="2",
+        content="聽起來很好吃。",
+        minute=1,
+    )
+    await save_message(
+        repository,
+        segmenter,
+        message_id="trigger-topic",
+        author_id="3",
+        content="那剛剛帶的是什麼？",
+        minute=2,
+    )
+
+    context = await ContextBuilder(
+        database.session_factory,
+        maximum_characters=1_000,
+    ).build("trigger-topic", assistant_author_id="999")
+
+    message_ids = {message.discord_message_id for message in context.messages}
+    assert {"alice-topic", "bob-reaction", "trigger-topic"} <= message_ids
+    assert "草莓蛋糕" in " ".join(message.content for message in context.messages)
+
+
+@pytest.mark.asyncio
+async def test_reply_target_is_marked_and_used_for_history_query(database: Database) -> None:
+    repository = MessageRepository(database.session_factory)
+    segmenter = ConversationSegmenter(database.session_factory)
+    await save_message(
+        repository,
+        segmenter,
+        message_id="visual-target",
+        author_id="1",
+        content="這張貼圖是在嘆氣。",
+        minute=0,
+    )
+    await save_message(
+        repository,
+        segmenter,
+        message_id="reply-trigger",
+        author_id="2",
+        content="為什麼會這樣？",
+        minute=1,
+        replied_to="visual-target",
+    )
+
+    context = await ContextBuilder(
+        database.session_factory,
+        maximum_characters=1_000,
+    ).build("reply-trigger", assistant_author_id="999")
+
+    target = next(
+        message
+        for message in context.messages
+        if message.discord_message_id == "visual-target"
+    )
+    assert target.content.startswith("[本次回覆的對象]")
+    assert "這張貼圖是在嘆氣。" in context.retrieval_query_text
+    assert "為什麼會這樣？" in context.retrieval_query_text

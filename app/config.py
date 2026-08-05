@@ -55,6 +55,13 @@ class Settings(BaseSettings):
         ge=0,
         le=20_000,
     )
+    ai_recent_channel_context_minutes: int = Field(default=10, ge=1, le=60)
+    ai_recent_messages_per_channel: int = Field(default=12, ge=1, le=50)
+    ai_recent_channel_context_characters: int = Field(
+        default=4_000,
+        ge=0,
+        le=40_000,
+    )
     ai_max_mentioned_participants: int = Field(default=3, ge=0, le=10)
     ai_personal_memory_context_characters: int = Field(
         default=1_500,

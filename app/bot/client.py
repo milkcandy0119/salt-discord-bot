@@ -43,6 +43,7 @@ from app.storage.reminders import ReminderRepository
 from app.storage.repositories import MessageRepository, NewMessage
 from app.storage.trial import TrialRepository
 from app.vision.discord_sources import extract_discord_visuals
+from app.vision.models import IncomingVisual
 from app.workers.background_worker import BackgroundWorker
 
 LOGGER = logging.getLogger(__name__)
@@ -743,10 +744,20 @@ class DiscordAssistantClient(discord.Client):
             incoming.discord_message_id,
             assistant_author_id=str(self.user.id),
         )
+        reply_target_visuals = await self._reply_target_visuals(message, incoming)
+        visual_inputs = self._merge_visual_inputs(
+            incoming.visual_inputs,
+            reply_target_visuals,
+        )
+        if any(item.is_processable_candidate for item in reply_target_visuals):
+            context = context.with_trigger_note(
+                "[附帶圖片是本次回覆對象的視覺內容；請依目前問題理解它，不要主動延伸。]",
+                maximum_characters=self._settings.ai_chat_max_context_characters,
+            )
         if self._settings.background_ai_enabled and self._history_retriever is not None:
             summaries = await self._history_retriever.retrieve(
                 trigger_message_id=incoming.discord_message_id,
-                query_text=incoming.content,
+                query_text=context.retrieval_query_text or incoming.content,
             )
             context = self._context_builder.add_historical_summaries(
                 context,
@@ -755,7 +766,7 @@ class DiscordAssistantClient(discord.Client):
             )
         outcome = await self._chat_service.generate(
             context,
-            visual_inputs=incoming.visual_inputs,
+            visual_inputs=visual_inputs,
             trigger_has_text=incoming.has_meaningful_text,
         )
         outgoing_content = self._fit_discord_message(outcome.content)
@@ -900,6 +911,49 @@ class DiscordAssistantClient(discord.Client):
         reference = message.reference
         resolved = reference.resolved if reference is not None else None
         return isinstance(resolved, discord.Message) and resolved.author.id == self.user.id
+
+    async def _reply_target_visuals(
+        self,
+        message: discord.Message,
+        incoming: IncomingMessage,
+    ) -> tuple[IncomingVisual, ...]:
+        """只在使用者回覆既有訊息時，取回該訊息的視覺內容供本次回答。"""
+
+        if incoming.replied_to_message_id is None:
+            return ()
+        stored_target = await self._repository.get_by_discord_id(
+            incoming.replied_to_message_id
+        )
+        if stored_target is None or stored_target.is_sensitive:
+            return ()
+        reference = message.reference
+        resolved = reference.resolved if reference is not None else None
+        if isinstance(resolved, discord.Message):
+            return extract_discord_visuals(resolved)
+        fetch_message = getattr(message.channel, "fetch_message", None)
+        if fetch_message is None:
+            return ()
+        try:
+            target = await fetch_message(int(incoming.replied_to_message_id))
+        except (discord.DiscordException, TypeError, ValueError):
+            return ()
+        return extract_discord_visuals(target)
+
+    @staticmethod
+    def _merge_visual_inputs(
+        current: tuple[IncomingVisual, ...],
+        reply_target: tuple[IncomingVisual, ...],
+    ) -> tuple[IncomingVisual, ...]:
+        """保留事件順序並避免同一 Discord 資源重複送往模型。"""
+
+        merged: list[IncomingVisual] = []
+        seen: set[tuple[str, str]] = set()
+        for visual in (*reply_target, *current):
+            key = (visual.media_kind.value, visual.resource_id)
+            if key not in seen:
+                merged.append(visual)
+                seen.add(key)
+        return tuple(merged)
 
     def _is_ai_command(self, content: str) -> bool:
         words = content.strip().split(maxsplit=1)

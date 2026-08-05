@@ -293,3 +293,20 @@ async def test_repeated_persona_name_prefix_is_removed(database: Database) -> No
 
     assert outcome.status == "generated"
     assert outcome.content == "先慢慢來就好。[*耳朵動了一下*]"
+
+
+@pytest.mark.asyncio
+async def test_model_output_removes_invisible_and_cyrillic_garbage(database: Database) -> None:
+    provider = FakeProvider(
+        response=ProviderChatResponse(
+            response_id="resp_unicode_garbage",
+            output_text="對喵\u200b……目前我看不到轉傳的圖片у\u2060",
+            input_tokens=100,
+            output_tokens=20,
+        )
+    )
+
+    outcome = await make_service(database, provider).generate(make_context())
+
+    assert outcome.status == "generated"
+    assert outcome.content == "對喵……目前我看不到轉傳的圖片"

@@ -16,6 +16,9 @@ def test_defaults_are_safe_without_credentials() -> None:
     assert settings.ai_recent_participant_context_minutes == 5
     assert settings.ai_recent_messages_per_participant == 4
     assert settings.ai_recent_participant_context_characters == 2_000
+    assert settings.ai_recent_channel_context_minutes == 10
+    assert settings.ai_recent_messages_per_channel == 12
+    assert settings.ai_recent_channel_context_characters == 4_000
     assert settings.ai_max_mentioned_participants == 3
     assert settings.ai_personal_memory_context_characters == 1_500
     assert settings.ai_vision_enabled is False

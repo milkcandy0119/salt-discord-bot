@@ -40,6 +40,7 @@ class ChatContext:
     trigger_message_id: str
     messages: tuple[ProviderInputMessage, ...]
     character_count: int
+    retrieval_query_text: str = ""
 
     def with_trigger_images(self, images: tuple[PreparedImage, ...]) -> ChatContext:
         """只在本次觸發訊息附加圖片，歷史訊息一律維持純文字。"""
@@ -56,6 +57,43 @@ class ChatContext:
             raise LookupError("聊天上下文找不到觸發訊息")
         return replace(self, messages=tuple(updated))
 
+    def with_trigger_note(self, note: str, *, maximum_characters: int | None = None) -> ChatContext:
+        """在目前回覆目標加上由程式產生的安全說明。"""
+
+        normalized = note.strip()
+        if not normalized:
+            return self
+        updated: list[ProviderInputMessage] = []
+        found = False
+        other_characters = sum(
+            len(message.content)
+            for message in self.messages
+            if message.discord_message_id != self.trigger_message_id
+        )
+        for message in self.messages:
+            if message.discord_message_id == self.trigger_message_id:
+                content = f"{message.content}\n{normalized}"
+                if (
+                    maximum_characters is not None
+                    and len(content) + other_characters > maximum_characters
+                ):
+                    available = maximum_characters - other_characters - len(normalized) - 1
+                    if available < 1:
+                        return self
+                    content = f"{message.content[:available]}\n{normalized}"
+                updated.append(replace(message, content=content))
+                found = True
+            else:
+                updated.append(message)
+        if not found:
+            raise LookupError("聊天上下文找不到觸發訊息")
+        messages = tuple(updated)
+        return replace(
+            self,
+            messages=messages,
+            character_count=sum(len(message.content) for message in messages),
+        )
+
 
 class ContextBuilder:
     """優先保留明確回覆鏈，再補入目前段落的近期內容。"""
@@ -68,6 +106,9 @@ class ContextBuilder:
         recent_participant_window: timedelta = timedelta(minutes=5),
         recent_messages_per_participant: int = 4,
         maximum_recent_participant_characters: int = 2_000,
+        recent_channel_window: timedelta = timedelta(minutes=10),
+        recent_messages_per_channel: int = 12,
+        maximum_recent_channel_characters: int = 4_000,
         maximum_mentioned_participants: int = 3,
         personal_memory_repository: PersonalMemoryRepository | None = None,
         maximum_personal_memory_characters: int = 1_500,
@@ -82,6 +123,12 @@ class ContextBuilder:
             raise ValueError("每位近期參與者訊息數必須大於零")
         if maximum_recent_participant_characters < 0:
             raise ValueError("近期參與者上下文字元數不得小於零")
+        if recent_channel_window <= timedelta(0):
+            raise ValueError("近期頻道時間窗必須大於零")
+        if recent_messages_per_channel <= 0:
+            raise ValueError("近期頻道訊息數必須大於零")
+        if maximum_recent_channel_characters < 0:
+            raise ValueError("近期頻道上下文字元數不得小於零")
         if maximum_mentioned_participants < 0:
             raise ValueError("最多提及參與者數不得小於零")
         if maximum_personal_memory_characters < 0:
@@ -91,6 +138,9 @@ class ContextBuilder:
         self._recent_participant_window = recent_participant_window
         self._recent_messages_per_participant = recent_messages_per_participant
         self._maximum_recent_participant_characters = maximum_recent_participant_characters
+        self._recent_channel_window = recent_channel_window
+        self._recent_messages_per_channel = recent_messages_per_channel
+        self._maximum_recent_channel_characters = maximum_recent_channel_characters
         self._maximum_mentioned_participants = maximum_mentioned_participants
         self._personal_memory_repository = personal_memory_repository
         self._maximum_personal_memory_characters = maximum_personal_memory_characters
@@ -131,6 +181,11 @@ class ContextBuilder:
                 records,
                 assistant_author_id=assistant_author_id,
             )
+            recent_channel_records = await self._load_recent_channel_records(
+                session,
+                trigger,
+                records,
+            )
             shared_group_records = await self._load_shared_group_records(
                 session,
                 trigger,
@@ -154,13 +209,20 @@ class ContextBuilder:
         )
 
         by_message_id = {record.discord_message_id: record for record in records}
+        supplemental_ids = {record.discord_message_id for record in supplemental_records}
+        recent_channel_records = tuple(
+            record
+            for record in recent_channel_records
+            if record.discord_message_id not in supplemental_ids
+        )
         priority = self._priority_order(
             trigger,
             records,
             by_message_id,
+            recent_channel_records,
             (*supplemental_records, *shared_group_records),
         )
-        supplemental_ids = {record.discord_message_id for record in supplemental_records}
+        recent_channel_ids = {record.discord_message_id for record in recent_channel_records}
         shared_group_ids = {record.discord_message_id for record in shared_group_records}
         selected: dict[str, ProviderInputMessage] = {}
         reserved_messages = (*owner_identity_messages, *memory_messages)
@@ -171,19 +233,28 @@ class ContextBuilder:
             self._maximum_recent_participant_characters,
             self._maximum_characters,
         )
+        recent_channel_remaining = min(
+            self._maximum_recent_channel_characters,
+            self._maximum_characters,
+        )
         for record in priority:
             rendered = self._render(
                 record,
                 owner_display_name=owner_display_name,
                 assistant_author_id=assistant_author_id,
                 is_trigger=record.discord_message_id == trigger.discord_message_id,
+                is_reply_target=record.discord_message_id == trigger.replied_to_message_id,
             )
             if record.discord_message_id in shared_group_ids:
                 rendered = f"[共同記憶頻道的近期內容，僅供背景：{rendered}]"
             if not rendered or remaining <= 0:
                 continue
             available = remaining
-            if record.discord_message_id in supplemental_ids:
+            if record.discord_message_id in recent_channel_ids:
+                if recent_channel_remaining <= 0:
+                    continue
+                available = min(available, recent_channel_remaining)
+            elif record.discord_message_id in supplemental_ids:
                 if supplemental_remaining <= 0:
                     continue
                 available = min(available, supplemental_remaining)
@@ -194,12 +265,19 @@ class ContextBuilder:
                 discord_message_id=record.discord_message_id,
             )
             remaining -= len(clipped)
-            if record.discord_message_id in supplemental_ids:
+            if record.discord_message_id in recent_channel_ids:
+                recent_channel_remaining -= len(clipped)
+            elif record.discord_message_id in supplemental_ids:
                 supplemental_remaining -= len(clipped)
 
         all_records = {
             record.discord_message_id: record
-            for record in (*records, *supplemental_records, *shared_group_records)
+            for record in (
+                *records,
+                *recent_channel_records,
+                *supplemental_records,
+                *shared_group_records,
+            )
         }
         ordered_messages = tuple(
             selected[record.discord_message_id]
@@ -214,6 +292,11 @@ class ContextBuilder:
             trigger_message_id=trigger_message_id,
             messages=ordered,
             character_count=sum(len(message.content) for message in ordered),
+            retrieval_query_text=self._build_retrieval_query(
+                trigger,
+                by_message_id,
+                recent_channel_records,
+            ),
         )
 
     def _render_personal_memories(
@@ -343,6 +426,7 @@ class ContextBuilder:
             trigger_message_id=context.trigger_message_id,
             messages=combined,
             character_count=sum(len(message.content) for message in combined),
+            retrieval_query_text=context.retrieval_query_text,
         )
 
     async def _load_recent_participant_records(
@@ -391,6 +475,36 @@ class ContextBuilder:
                     supplemental.setdefault(record.discord_message_id, record)
         return tuple(supplemental.values())
 
+    async def _load_recent_channel_records(
+        self,
+        session: AsyncSession,
+        trigger: MessageRecord,
+        segment_records: list[MessageRecord],
+    ) -> tuple[MessageRecord, ...]:
+        """補入同頻道最近對話，讓多人輪流發言不會因切段失去脈絡。"""
+
+        if self._maximum_recent_channel_characters == 0:
+            return ()
+        cutoff = trigger.discord_created_at - self._recent_channel_window
+        segment_message_ids = {record.discord_message_id for record in segment_records}
+        recent = (
+            await session.scalars(
+                select(MessageRecord)
+                .where(
+                    MessageRecord.guild_id == trigger.guild_id,
+                    MessageRecord.channel_id == trigger.channel_id,
+                    MessageRecord.is_sensitive.is_(False),
+                    MessageRecord.discord_created_at >= cutoff,
+                    MessageRecord.discord_created_at <= trigger.discord_created_at,
+                )
+                .order_by(MessageRecord.discord_created_at.desc(), MessageRecord.id.desc())
+                .limit(self._recent_messages_per_channel)
+            )
+        ).all()
+        return tuple(
+            record for record in recent if record.discord_message_id not in segment_message_ids
+        )
+
     async def _load_shared_group_records(
         self,
         session: AsyncSession,
@@ -435,6 +549,7 @@ class ContextBuilder:
         trigger: MessageRecord,
         records: list[MessageRecord],
         by_message_id: dict[str, MessageRecord],
+        recent_channel_records: tuple[MessageRecord, ...] = (),
         supplemental_records: tuple[MessageRecord, ...] = (),
     ) -> tuple[MessageRecord, ...]:
         chain: list[MessageRecord] = []
@@ -449,7 +564,7 @@ class ContextBuilder:
                 else None
             )
         recent = [record for record in reversed(records) if record.discord_message_id not in seen]
-        return tuple([*chain, *supplemental_records, *recent])
+        return tuple([*chain, *recent_channel_records, *supplemental_records, *recent])
 
     def _render(
         self,
@@ -458,6 +573,7 @@ class ContextBuilder:
         owner_display_name: str | None,
         assistant_author_id: str,
         is_trigger: bool = False,
+        is_reply_target: bool = False,
     ) -> str:
         author = record.author_display_name or f"使用者 {record.author_id}"
         content = record.content.strip()
@@ -479,5 +595,37 @@ class ContextBuilder:
                 ),
                 content,
             )
-        prefix = "[目前要回覆] " if is_trigger else ""
+        prefix = ""
+        if is_reply_target:
+            prefix += "[本次回覆的對象] "
+        if is_trigger:
+            prefix += "[目前要回覆] "
         return f"{prefix}{author}: {content}"
+
+    @staticmethod
+    def _build_retrieval_query(
+        trigger: MessageRecord,
+        by_message_id: dict[str, MessageRecord],
+        recent_channel_records: tuple[MessageRecord, ...],
+    ) -> str:
+        """用目前問題、回覆目標與最近話題建立語意檢索查詢。"""
+
+        records: list[MessageRecord] = []
+        target = (
+            by_message_id.get(trigger.replied_to_message_id)
+            if trigger.replied_to_message_id is not None
+            else None
+        )
+        if target is not None:
+            records.append(target)
+        records.extend(
+            record
+            for record in sorted(
+                recent_channel_records,
+                key=lambda item: (item.discord_created_at, item.id),
+            )[-3:]
+            if record.discord_message_id != trigger.discord_message_id
+        )
+        records.append(trigger)
+        text = "\n".join(record.content.strip() for record in records if record.content.strip())
+        return text[-2_000:]

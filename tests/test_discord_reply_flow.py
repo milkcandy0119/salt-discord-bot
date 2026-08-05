@@ -15,6 +15,7 @@ from app.memory.personal_memory import MemoryCaptureOutcome
 from app.storage.database import Database
 from app.storage.repositories import MessageRepository, NewMessage
 from app.storage.trial import TrialRepository
+from app.vision.models import IncomingVisual, VisualMediaKind
 
 
 @dataclass
@@ -78,6 +79,30 @@ class FakeChatService:
         visual_inputs = options.get("visual_inputs", ())
         self.received_visual_count = len(visual_inputs)  # type: ignore[arg-type]
         return ChatOutcome("generated", "安全的測試回覆")
+
+
+def make_visual(resource_id: str) -> IncomingVisual:
+    return IncomingVisual(
+        resource_id=resource_id,
+        media_kind=VisualMediaKind.STICKER,
+        filename=f"sticker-{resource_id}.png",
+        declared_content_type="image/png",
+        declared_size=100,
+        source_url=f"https://cdn.discordapp.com/stickers/{resource_id}.png",
+    )
+
+
+def test_reply_target_visuals_are_prioritized_and_deduplicated() -> None:
+    target = make_visual("target")
+    duplicate = make_visual("target")
+    current = make_visual("current")
+
+    visuals = DiscordAssistantClient._merge_visual_inputs(  # noqa: SLF001
+        (duplicate, current),
+        (target,),
+    )
+
+    assert [visual.resource_id for visual in visuals] == ["target", "current"]
 
 
 @pytest.mark.asyncio
