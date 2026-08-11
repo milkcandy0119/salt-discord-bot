@@ -1,7 +1,35 @@
 import pytest
 
+from app.bot.admin_memory_commands import AdminMemoryCommandGroup, _AdminMenuView
+from app.storage.admin_audit import AdminAuditRepository
 from app.storage.database import Database
 from app.storage.memory_groups import ChannelAccessRepository, MemoryGroupError
+
+
+def test_admin_slash_group_exposes_only_the_menu(database: Database) -> None:
+    repository = ChannelAccessRepository(database.session_factory)
+    group = AdminMemoryCommandGroup(
+        repository=repository,
+        audit_repository=AdminAuditRepository(database.session_factory),
+        allowed_guild_ids=frozenset({1}),
+        admin_user_ids=frozenset({9}),
+    )
+
+    commands = {command.name: command for command in group.commands}
+    view = _AdminMenuView(parent=group, guild_id="1", user_id="9")
+
+    assert set(commands) == {"menu"}
+    assert commands["menu"].parameters == []
+    assert {option.value for option in view.children[0].options} == {
+        "allowlist-list",
+        "allowlist-add",
+        "allowlist-remove",
+        "group-list",
+        "group-create",
+        "group-add-channel",
+        "group-remove-channel",
+        "group-delete",
+    }
 
 
 @pytest.mark.asyncio

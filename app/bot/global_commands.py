@@ -96,7 +96,7 @@ class SaltGlobalCommandGroup(app_commands.Group):
                     "這個指令不呼叫 AI，也不會顯示聊天、記憶或管理資料",
                     "只有白名單伺服器與頻道的訊息才可能由 Salt 保存；敏感內容會先在本機遮罩",
                     "符合回覆條件的非敏感上下文可能傳送至 OpenAI，並受預算限制",
-                    "個人記憶可由本人透過 /memory view、set、delete 私密管理",
+                    "個人記憶可由本人透過 /memory menu 私密管理",
                 )
             ),
         )

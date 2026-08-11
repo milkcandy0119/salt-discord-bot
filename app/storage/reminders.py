@@ -21,6 +21,11 @@ class Reminder:
     user_id: str
     content: str
     timezone_name: str
+    recurrence_kind: str
+    recurrence_time: str | None
+    recurrence_weekdays: tuple[int, ...]
+    interval_days: int | None
+    recurrence_start_date: str | None
     due_at: datetime
     status: str
     attempts: int
@@ -94,6 +99,11 @@ class ReminderRepository:
         timezone_name: str,
         due_at: datetime,
         max_attempts: int,
+        recurrence_kind: str = "once",
+        recurrence_time: str | None = None,
+        recurrence_weekdays: tuple[int, ...] = (),
+        interval_days: int | None = None,
+        recurrence_start_date: str | None = None,
         now: datetime | None = None,
     ) -> Reminder:
         """建立不呼叫 AI 的持久化私訊提醒。"""
@@ -105,6 +115,15 @@ class ReminderRepository:
                 user_id=user_id,
                 content=content,
                 timezone_name=timezone_name,
+                recurrence_kind=recurrence_kind,
+                recurrence_time=recurrence_time,
+                recurrence_weekdays=(
+                    ",".join(str(day) for day in recurrence_weekdays)
+                    if recurrence_weekdays
+                    else None
+                ),
+                interval_days=interval_days,
+                recurrence_start_date=recurrence_start_date,
                 due_at=due_at,
                 status="pending",
                 attempts=0,
@@ -171,6 +190,63 @@ class ReminderRepository:
                 )
             )
         return result.rowcount == 1
+
+    async def cancel_many_own(
+        self,
+        *,
+        guild_id: str,
+        user_id: str,
+        reminder_ids: tuple[int, ...],
+        now: datetime | None = None,
+    ) -> int:
+        """Cancel multiple pending reminders owned by the requesting user."""
+
+        if not reminder_ids:
+            return 0
+        effective_now = now or datetime.now(UTC)
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(
+                update(ReminderRecord)
+                .where(
+                    ReminderRecord.id.in_(reminder_ids),
+                    ReminderRecord.guild_id == guild_id,
+                    ReminderRecord.user_id == user_id,
+                    ReminderRecord.status.in_(("pending", "retry_wait")),
+                )
+                .values(
+                    status="cancelled",
+                    cancelled_at=effective_now,
+                    updated_at=effective_now,
+                )
+            )
+        return result.rowcount or 0
+
+    async def update_many_own_content(
+        self,
+        *,
+        guild_id: str,
+        user_id: str,
+        reminder_ids: tuple[int, ...],
+        content: str,
+        now: datetime | None = None,
+    ) -> int:
+        """Change content only for pending reminders owned by the requester."""
+
+        if not reminder_ids:
+            return 0
+        effective_now = now or datetime.now(UTC)
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(
+                update(ReminderRecord)
+                .where(
+                    ReminderRecord.id.in_(reminder_ids),
+                    ReminderRecord.guild_id == guild_id,
+                    ReminderRecord.user_id == user_id,
+                    ReminderRecord.status.in_(("pending", "retry_wait")),
+                )
+                .values(content=content, updated_at=effective_now)
+            )
+        return result.rowcount or 0
 
     async def claim_due(
         self,
@@ -253,6 +329,35 @@ class ReminderRepository:
                 )
             )
 
+    async def reschedule_after_sent(
+        self,
+        reminder: Reminder,
+        *,
+        next_due_at: datetime,
+        now: datetime | None = None,
+    ) -> None:
+        """Keep a recurring reminder active and reset its delivery retry state."""
+
+        effective_now = now or datetime.now(UTC)
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                update(ReminderRecord)
+                .where(
+                    ReminderRecord.id == reminder.id,
+                    ReminderRecord.status == "sending",
+                )
+                .values(
+                    due_at=next_due_at,
+                    status="pending",
+                    attempts=0,
+                    available_at=effective_now,
+                    claimed_at=None,
+                    sent_at=effective_now,
+                    last_error_code=None,
+                    updated_at=effective_now,
+                )
+            )
+
     async def retry_or_fail(
         self,
         reminder: Reminder,
@@ -309,6 +414,15 @@ class ReminderRepository:
             user_id=record.user_id,
             content=record.content,
             timezone_name=record.timezone_name,
+            recurrence_kind=record.recurrence_kind,
+            recurrence_time=record.recurrence_time,
+            recurrence_weekdays=(
+                tuple(int(day) for day in record.recurrence_weekdays.split(","))
+                if record.recurrence_weekdays
+                else ()
+            ),
+            interval_days=record.interval_days,
+            recurrence_start_date=record.recurrence_start_date,
             due_at=record.due_at,
             status=record.status,
             attempts=record.attempts,

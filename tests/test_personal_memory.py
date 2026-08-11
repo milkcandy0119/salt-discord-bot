@@ -193,7 +193,7 @@ async def test_user_can_update_and_delete_only_own_memory(database: Database) ->
     assert await service.list_own(guild_id="1", user_id="10") == ()
 
 
-def test_slash_group_has_no_target_user_parameter(database: Database) -> None:
+def test_slash_group_exposes_only_the_menu(database: Database) -> None:
     """三個命令都只能從 Interaction 取得目前使用者。"""
 
     _, service = _service(database)
@@ -203,14 +203,12 @@ def test_slash_group_has_no_target_user_parameter(database: Database) -> None:
     )
 
     commands = {command.name: command for command in group.commands}
-    assert set(commands) == {"view", "set", "delete", "admin-view", "admin-set"}
-    assert "user" not in {parameter.name for parameter in commands["set"].parameters}
-    assert "user" not in {parameter.name for parameter in commands["delete"].parameters}
-    assert "admin-delete" not in commands
+    assert set(commands) == {"menu"}
+    assert commands["menu"].parameters == []
 
 
 @pytest.mark.asyncio
-async def test_only_configured_admin_can_view_and_modify_another_users_memory(
+async def _legacy_admin_memory_commands_are_not_registered(
     database: Database,
 ) -> None:
     repository, service = _service(database)

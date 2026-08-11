@@ -90,13 +90,13 @@ memory_group_channels
 
 ## 4. 白名單頻道管理
 
-新增管理員專用指令：
+由管理員使用私密選單：
 
 ```text
-/admin allowlist list
-/admin allowlist add channel:#頻道
-/admin allowlist remove channel:#頻道
-/admin allowlist sync channel:#頻道
+/admin menu
+├── 查看白名單
+├── 新增白名單頻道
+└── 移除白名單頻道
 ```
 
 ### 白名單規則
@@ -114,11 +114,7 @@ memory_group_channels
 
 ### 歷史同步
 
-新增白名單頻道時，預設只處理之後的新訊息。歷史訊息只能由管理員手動執行：
-
-```text
-/admin allowlist sync channel:#頻道
-```
+新增白名單頻道時，預設只處理之後的新訊息。歷史訊息不提供 Discord Slash Command；必須以受控的 CLI 流程執行。
 
 歷史同步必須：
 
@@ -135,24 +131,12 @@ memory_group_channels
 ## 5. 記憶分組管理指令
 
 ```text
-/admin memory-group list
-/admin memory-group create name:名稱 description:描述
-/admin memory-group edit name:名稱
-/admin memory-group delete name:名稱
-```
-
-`edit` 至少支援：
-
-- 新增頻道。
-- 移除頻道。
-- 修改分組名稱。
-- 修改分組描述。
-
-建議使用新增／移除單一頻道的操作，避免整批覆寫時意外移除頻道：
-
-```text
-/admin memory-group edit add-channel
-/admin memory-group edit remove-channel
+/admin menu
+├── 查看記憶群組
+├── 建立記憶群組
+├── 加入頻道到記憶群組
+├── 移除記憶群組的頻道
+└── 刪除記憶群組
 ```
 
 限制：
@@ -170,24 +154,14 @@ memory_group_channels
 預計結構：
 
 ```text
-/remind
+/remind create|manage|list|cancel
 /timezone
-/memory
+/memory menu
 
-/admin
-├── allowlist
-│   ├── list
-│   ├── add
-│   ├── remove
-│   └── sync
-└── memory-group
-    ├── list
-    ├── create
-    ├── edit
-    └── delete
+/admin menu
 ```
 
-避免過深的結構，例如 `/admin settings memory allowlist add`。`/admin allowlist ...` 與 `/admin memory-group ...` 即可。
+日常設定集中在選單，避免大量參數式子指令造成指令列表雜亂。
 
 所有 `/admin` 子指令必須在程式端再次驗證管理員身分，不能只依賴 Discord UI 權限。
 
@@ -346,4 +320,3 @@ pending_actions
 6. 現有 AI 預算、敏感資料過濾與稽核機制。
 
 實作時應先提出資料模型與流程變更計畫，再開始修改程式碼。
-

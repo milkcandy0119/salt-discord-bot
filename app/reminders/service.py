@@ -1,29 +1,36 @@
-"""明確日期、時間與 IANA 時區的保守提醒服務。"""
+"""Reminder application service, including timezone and recurrence validation."""
 
 from __future__ import annotations
 
 import re
-from datetime import UTC, date, datetime, time
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
+from app.reminders.schedule import (
+    InvalidScheduleError,
+    next_due_at,
+    parse_interval_days,
+    parse_local_datetime,
+    parse_start_date,
+    parse_weekdays,
+    validate_timezone,
+)
 from app.security.sensitive_filter import SensitiveFilter
 from app.storage.reminders import Reminder, ReminderRepository
 
 MAX_REMINDER_CHARACTERS = 500
-_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
-_TIME_PATTERN = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 
 
 class InvalidReminderError(ValueError):
-    """提醒內容、日期、時間或時區不符合保守格式。"""
+    """The user supplied invalid reminder data."""
 
 
 class SensitiveReminderError(ValueError):
-    """提醒內容可能含祕密，因此拒絕保存。"""
+    """The reminder contains information that must not be persisted."""
 
 
 class ReminderService:
-    """建立、顯示與取消目前使用者自己的提醒。"""
+    """Create, display, and cancel private reminders for their owner only."""
 
     def __init__(
         self,
@@ -39,14 +46,8 @@ class ReminderService:
         self._max_attempts = max_attempts
 
     async def set_timezone(
-        self,
-        *,
-        guild_id: str,
-        user_id: str,
-        timezone_name: str,
+        self, *, guild_id: str, user_id: str, timezone_name: str
     ) -> str:
-        """驗證並保存目前使用者在此伺服器的 IANA 時區。"""
-
         validated = self.validate_timezone(timezone_name)
         await self._repository.set_timezone(
             guild_id=guild_id,
@@ -56,21 +57,17 @@ class ReminderService:
         return validated
 
     async def get_timezone(self, *, guild_id: str, user_id: str) -> str:
-        """讀取使用者時區，未設定時使用 Asia/Taipei。"""
-
         return (
             await self._repository.get_timezone(guild_id=guild_id, user_id=user_id)
             or self._default_timezone
         )
 
     async def require_timezone(self, *, guild_id: str, user_id: str) -> str:
-        """提醒不得以系統預設時區取代使用者本人設定。"""
-
         timezone_name = await self._repository.get_timezone(
             guild_id=guild_id, user_id=user_id
         )
         if timezone_name is None:
-            raise InvalidReminderError("請先使用 /timezone set 設定你的提醒時區")
+            raise InvalidReminderError("請先使用 /timezone set 設定你的時區")
         return timezone_name
 
     async def create(
@@ -83,19 +80,10 @@ class ReminderService:
         content: str,
         now: datetime | None = None,
     ) -> Reminder:
-        """以使用者時區將明確本地時間轉為 UTC 後保存。"""
+        """Create a one-time reminder; kept as the service compatibility API."""
 
-        cleaned = re.sub(r"\s+", " ", content).strip()
-        if not cleaned or len(cleaned) > MAX_REMINDER_CHARACTERS:
-            raise InvalidReminderError(
-                f"提醒內容必須介於 1 到 {MAX_REMINDER_CHARACTERS} 個字元"
-            )
-        if self._sensitive_filter.scan(cleaned).is_sensitive:
-            raise SensitiveReminderError("提醒可能含敏感資料，未保存")
-        timezone_name = await self.require_timezone(
-            guild_id=guild_id,
-            user_id=user_id,
-        )
+        cleaned = self._validate_content(content)
+        timezone_name = await self.require_timezone(guild_id=guild_id, user_id=user_id)
         due_at = self.parse_local_datetime(
             date_text=date_text,
             time_text=time_text,
@@ -114,93 +102,228 @@ class ReminderService:
             now=effective_now,
         )
 
+    async def create_daily(
+        self,
+        *,
+        guild_id: str,
+        user_id: str,
+        time_text: str,
+        content: str,
+        now: datetime | None = None,
+    ) -> Reminder:
+        return await self._create_recurring(
+            guild_id=guild_id,
+            user_id=user_id,
+            recurrence_kind="daily",
+            time_text=time_text,
+            content=content,
+            now=now,
+        )
+
+    async def create_weekly(
+        self,
+        *,
+        guild_id: str,
+        user_id: str,
+        weekdays_text: str,
+        time_text: str,
+        content: str,
+        now: datetime | None = None,
+    ) -> Reminder:
+        try:
+            weekdays = parse_weekdays(weekdays_text)
+        except InvalidScheduleError as error:
+            raise InvalidReminderError(str(error)) from error
+        return await self._create_recurring(
+            guild_id=guild_id,
+            user_id=user_id,
+            recurrence_kind="weekly",
+            time_text=time_text,
+            content=content,
+            weekdays=weekdays,
+            now=now,
+        )
+
+    async def create_interval(
+        self,
+        *,
+        guild_id: str,
+        user_id: str,
+        every_text: str,
+        start_date_text: str,
+        time_text: str,
+        content: str,
+        now: datetime | None = None,
+    ) -> Reminder:
+        try:
+            interval_days = parse_interval_days(every_text)
+            start_date = parse_start_date(start_date_text)
+        except InvalidScheduleError as error:
+            raise InvalidReminderError(str(error)) from error
+        return await self._create_recurring(
+            guild_id=guild_id,
+            user_id=user_id,
+            recurrence_kind="interval",
+            time_text=time_text,
+            content=content,
+            interval_days=interval_days,
+            start_date=start_date,
+            now=now,
+        )
+
     async def list_own(
         self,
         *,
         guild_id: str,
         user_id: str,
+        limit: int = 50,
     ) -> tuple[Reminder, ...]:
-        """列出目前使用者尚未完成或取消的提醒。"""
-
         return await self._repository.list_own_pending(
             guild_id=guild_id,
             user_id=user_id,
+            limit=limit,
         )
 
-    async def cancel(
-        self,
-        *,
-        guild_id: str,
-        user_id: str,
-        reminder_id: int,
-    ) -> bool:
-        """取消目前使用者自己的指定提醒。"""
-
+    async def cancel(self, *, guild_id: str, user_id: str, reminder_id: int) -> bool:
         return await self._repository.cancel_own(
             guild_id=guild_id,
             user_id=user_id,
             reminder_id=reminder_id,
         )
 
+    async def cancel_many(
+        self,
+        *,
+        guild_id: str,
+        user_id: str,
+        reminder_ids: tuple[int, ...],
+    ) -> int:
+        validated_ids = self._validate_reminder_ids(reminder_ids)
+        return await self._repository.cancel_many_own(
+            guild_id=guild_id,
+            user_id=user_id,
+            reminder_ids=validated_ids,
+        )
+
+    async def update_many_content(
+        self,
+        *,
+        guild_id: str,
+        user_id: str,
+        reminder_ids: tuple[int, ...],
+        content: str,
+    ) -> int:
+        validated_ids = self._validate_reminder_ids(reminder_ids)
+        cleaned = self._validate_content(content)
+        return await self._repository.update_many_own_content(
+            guild_id=guild_id,
+            user_id=user_id,
+            reminder_ids=validated_ids,
+            content=cleaned,
+        )
+
     @staticmethod
     def validate_timezone(timezone_name: str) -> str:
-        """只接受可由標準 tzdata 載入的 IANA 時區名稱。"""
-
-        cleaned = timezone_name.strip()
-        if not cleaned or len(cleaned) > 64:
-            raise InvalidReminderError("時區名稱格式不正確")
         try:
-            ZoneInfo(cleaned)
-        except ZoneInfoNotFoundError as error:
-            raise InvalidReminderError(
-                "找不到這個 IANA 時區，例如可使用 Asia/Taipei"
-            ) from error
-        return cleaned
+            return validate_timezone(timezone_name)
+        except InvalidScheduleError as error:
+            raise InvalidReminderError(str(error)) from error
 
-    @classmethod
+    @staticmethod
     def parse_local_datetime(
-        cls,
-        *,
-        date_text: str,
-        time_text: str,
-        timezone_name: str,
+        *, date_text: str, time_text: str, timezone_name: str
     ) -> datetime:
-        """拒絕格式錯誤、夏令時間不存在或重複的本地時間。"""
-
-        if not _DATE_PATTERN.fullmatch(date_text) or not _TIME_PATTERN.fullmatch(
-            time_text
-        ):
-            raise InvalidReminderError("日期與時間必須使用 YYYY-MM-DD 和 HH:MM")
         try:
-            local_date = date.fromisoformat(date_text)
-            local_time = time.fromisoformat(time_text)
-        except ValueError as error:
-            raise InvalidReminderError("日期或時間不存在") from error
-        zone = ZoneInfo(cls.validate_timezone(timezone_name))
-        naive = datetime.combine(local_date, local_time)
-        candidates: dict[float, datetime] = {}
-        for fold in (0, 1):
-            candidate = naive.replace(tzinfo=zone, fold=fold)
-            round_trip = candidate.astimezone(UTC).astimezone(zone).replace(tzinfo=None)
-            if round_trip == naive:
-                candidates[candidate.timestamp()] = candidate
-        if not candidates:
-            raise InvalidReminderError("這個本地時間因時制調整而不存在")
-        if len(candidates) > 1:
-            raise InvalidReminderError("這個本地時間因時制調整而重複，請改用其他時間")
-        return next(iter(candidates.values())).astimezone(UTC)
+            return parse_local_datetime(
+                date_text=date_text,
+                time_text=time_text,
+                timezone_name=timezone_name,
+            )
+        except InvalidScheduleError as error:
+            raise InvalidReminderError(str(error)) from error
 
     @staticmethod
     def format_due_at(reminder: Reminder) -> str:
-        """依建立提醒時的時區顯示明確日期、時間與時區。"""
-
         local = ReminderService._as_utc(reminder.due_at).astimezone(
             ZoneInfo(reminder.timezone_name)
         )
         return f"{local:%Y-%m-%d %H:%M} {reminder.timezone_name}"
 
     @staticmethod
+    def format_recurrence(reminder: Reminder) -> str:
+        if reminder.recurrence_kind == "daily":
+            return "每天"
+        if reminder.recurrence_kind == "weekly":
+            labels = ("週一", "週二", "週三", "週四", "週五", "週六", "週日")
+            return "每週 " + "、".join(labels[day] for day in reminder.recurrence_weekdays)
+        if reminder.recurrence_kind == "interval":
+            return f"每 {reminder.interval_days} 天"
+        return "一次"
+
+    async def _create_recurring(
+        self,
+        *,
+        guild_id: str,
+        user_id: str,
+        recurrence_kind: str,
+        time_text: str,
+        content: str,
+        weekdays: tuple[int, ...] = (),
+        interval_days: int | None = None,
+        start_date: date | None = None,
+        now: datetime | None = None,
+    ) -> Reminder:
+        cleaned = self._validate_content(content)
+        timezone_name = await self.require_timezone(guild_id=guild_id, user_id=user_id)
+        effective_now = self._as_utc(now or datetime.now(UTC))
+        try:
+            due_at = next_due_at(
+                recurrence_kind=recurrence_kind,
+                timezone_name=timezone_name,
+                time_text=time_text,
+                reference=effective_now,
+                weekdays=weekdays,
+                interval_days=interval_days,
+                start_date=start_date,
+            )
+        except InvalidScheduleError as error:
+            raise InvalidReminderError(str(error)) from error
+        return await self._repository.create(
+            guild_id=guild_id,
+            user_id=user_id,
+            content=cleaned,
+            timezone_name=timezone_name,
+            due_at=due_at,
+            max_attempts=self._max_attempts,
+            recurrence_kind=recurrence_kind,
+            recurrence_time=time_text,
+            recurrence_weekdays=weekdays,
+            interval_days=interval_days,
+            recurrence_start_date=start_date.isoformat() if start_date else None,
+            now=effective_now,
+        )
+
+    def _validate_content(self, content: str) -> str:
+        cleaned = re.sub(r"\s+", " ", content).strip()
+        if not cleaned or len(cleaned) > MAX_REMINDER_CHARACTERS:
+            raise InvalidReminderError(
+                f"提醒內容長度必須介於 1 到 {MAX_REMINDER_CHARACTERS} 個字元"
+            )
+        if self._sensitive_filter.scan(cleaned).is_sensitive:
+            raise SensitiveReminderError("提醒內容包含疑似敏感資訊，無法儲存")
+        return cleaned
+
+    @staticmethod
+    def _validate_reminder_ids(reminder_ids: tuple[int, ...]) -> tuple[int, ...]:
+        unique_ids = tuple(dict.fromkeys(reminder_ids))
+        if (
+            not unique_ids
+            or len(unique_ids) > 25
+            or any(reminder_id <= 0 for reminder_id in unique_ids)
+        ):
+            raise InvalidReminderError("請選擇 1 到 25 個有效的提醒")
+        return unique_ids
+
+    @staticmethod
     def _as_utc(value: datetime) -> datetime:
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value.astimezone(UTC)
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

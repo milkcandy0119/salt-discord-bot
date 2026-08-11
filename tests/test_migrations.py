@@ -52,7 +52,7 @@ def test_phase_one_database_upgrade_preserves_existing_messages(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert message == ("階段 1 既有訊息", None)
-    assert revision == ("20260805_0009",)
+    assert revision == ("20260808_0010",)
 
 
 def test_phase_five_migration_does_not_queue_existing_archived_segments(
@@ -118,7 +118,7 @@ def test_personal_memory_migration_does_not_infer_existing_chat(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert memory_count == (0,)
-    assert revision == ("20260805_0009",)
+    assert revision == ("20260808_0010",)
 
 
 def test_reminder_migration_creates_no_default_jobs_or_private_data(
@@ -140,7 +140,52 @@ def test_reminder_migration_creates_no_default_jobs_or_private_data(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert counts == (0, 0, 0)
-    assert revision == ("20260805_0009",)
+    assert revision == ("20260808_0010",)
+
+
+def test_recurring_reminder_migration_preserves_existing_one_time_reminder(
+    temporary_test_directory: Path,
+) -> None:
+    database_path = temporary_test_directory / "recurring-reminder-upgrade.sqlite3"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    upgrade_database(database_url, revision="20260805_0009")
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute(
+            """
+            INSERT INTO reminders (
+                guild_id, user_id, content, timezone_name, due_at, status,
+                attempts, max_attempts, available_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "1",
+                "10",
+                "legacy reminder",
+                "Asia/Taipei",
+                "2026-08-09 01:00:00",
+                "pending",
+                0,
+                5,
+                "2026-08-08 01:00:00",
+                "2026-08-08 01:00:00",
+                "2026-08-08 01:00:00",
+            ),
+        )
+        connection.commit()
+
+    upgrade_database(database_url)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        recurrence = connection.execute(
+            """
+            SELECT recurrence_kind, recurrence_time, recurrence_weekdays,
+                   interval_days, recurrence_start_date
+            FROM reminders
+            """
+        ).fetchone()
+
+    assert recurrence == ("once", None, None, None, None)
 
 
 def test_trial_migration_does_not_start_or_infer_a_trial(
@@ -167,7 +212,7 @@ def test_trial_migration_does_not_start_or_infer_a_trial(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert counts == (0, 0, 0, 0)
-    assert revision == ("20260805_0009",)
+    assert revision == ("20260808_0010",)
 
 
 def test_production_migration_preserves_existing_trial_and_adds_safe_state(
@@ -227,4 +272,4 @@ def test_production_migration_preserves_existing_trial_and_adds_safe_state(
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert row == ("active", None, None)
-    assert revision == ("20260805_0009",)
+    assert revision == ("20260808_0010",)

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
+from app.reminders.schedule import InvalidScheduleError, next_due_at, parse_start_date
 from app.storage.reminders import Reminder, ReminderRepository
 
 
@@ -80,6 +81,30 @@ class ReminderDispatcher:
                 retried += int(status == "retry_wait")
                 failed += int(status == "failed")
             else:
-                await self._repository.mark_sent(reminder.id)
+                if reminder.recurrence_kind == "once":
+                    await self._repository.mark_sent(reminder.id)
+                else:
+                    await self._reschedule_after_sent(reminder)
                 sent += 1
         return ReminderDispatchResult(sent, retried, failed)
+
+    async def _reschedule_after_sent(self, reminder: Reminder) -> None:
+        """Advance a successful recurring reminder to its next local occurrence."""
+
+        if reminder.recurrence_time is None:
+            raise InvalidScheduleError("重複提醒缺少固定時間")
+        start_date: date | None = (
+            parse_start_date(reminder.recurrence_start_date)
+            if reminder.recurrence_start_date is not None
+            else None
+        )
+        next_due = next_due_at(
+            recurrence_kind=reminder.recurrence_kind,
+            timezone_name=reminder.timezone_name,
+            time_text=reminder.recurrence_time,
+            reference=datetime.now(UTC),
+            weekdays=reminder.recurrence_weekdays,
+            interval_days=reminder.interval_days,
+            start_date=start_date,
+        )
+        await self._repository.reschedule_after_sent(reminder, next_due_at=next_due)

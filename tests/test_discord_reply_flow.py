@@ -112,7 +112,7 @@ def test_reply_target_visuals_are_prioritized_and_deduplicated() -> None:
         (
             "ambiguous_delete",
             "可以喵，不過 Salt 還不知道你指的是哪一筆\n"
-            "請先用 /memory view 查看編號，再使用 /memory delete",
+            "請先用 /memory menu 查看編號，再透過選單刪除",
         ),
         (
             "unsupported_memory_subject",
@@ -170,7 +170,7 @@ async def test_successful_discord_message_preserves_actual_delivery_relationship
         channel_ids=frozenset({2}),
         companion_channel_ids=frozenset(),
         timezone_name="Asia/Taipei",
-        duration=timedelta(days=7),
+            duration=timedelta(days=3_650),
         global_increment_limit_microusd=1_000_000,
         background_increment_limit_microusd=250_000,
         companion_daily_reply_limit=20,

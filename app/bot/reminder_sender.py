@@ -1,6 +1,9 @@
-"""將持久化提醒只透過 Discord 私訊交付。"""
+"""Deliver persisted reminders as private Discord embeds."""
 
 from __future__ import annotations
+
+from datetime import UTC
+from zoneinfo import ZoneInfo
 
 import discord
 
@@ -9,19 +12,19 @@ from app.storage.reminders import Reminder
 
 
 class DiscordReminderSender:
-    """私訊失敗不會改在公開頻道補發。"""
+    """DM reminders only; delivery failures never fall back to a public channel."""
 
     def __init__(self, client: discord.Client) -> None:
         self._client = client
 
     async def send(self, reminder: Reminder) -> None:
-        """取得使用者後傳送停用 mentions 的固定提醒文字。"""
+        """Send one reminder as an embed without resolving user mentions."""
 
         try:
             user_id = int(reminder.user_id)
             user = self._client.get_user(user_id) or await self._client.fetch_user(user_id)
             await user.send(
-                f"提醒時間到了：{reminder.content}",
+                embed=self._build_embed(reminder),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except (discord.Forbidden, discord.NotFound) as error:
@@ -34,3 +37,31 @@ class DiscordReminderSender:
                 "discord_delivery_error",
                 retryable=True,
             ) from error
+
+    @staticmethod
+    def _build_embed(reminder: Reminder) -> discord.Embed:
+        local = (
+            reminder.due_at.replace(tzinfo=UTC)
+            if reminder.due_at.tzinfo is None
+            else reminder.due_at.astimezone(UTC)
+        ).astimezone(ZoneInfo(reminder.timezone_name))
+        embed = discord.Embed(
+            title="⏰ 提醒時間到了",
+            description=reminder.content,
+            colour=discord.Colour.blurple(),
+            timestamp=local,
+        )
+        recurrence_label = {
+            "once": "單次",
+            "daily": "每天",
+            "weekly": "每週",
+            "interval": f"每 {reminder.interval_days} 天",
+        }.get(reminder.recurrence_kind, reminder.recurrence_kind)
+        embed.add_field(name="提醒規則", value=recurrence_label, inline=False)
+        embed.add_field(
+            name="設定時間",
+            value=f"{local:%Y-%m-%d %H:%M} {reminder.timezone_name}",
+            inline=False,
+        )
+        embed.set_footer(text=f"提醒 #{reminder.id}")
+        return embed

@@ -163,25 +163,6 @@ class MemoryGroupChannelRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class PendingActionRecord(Base):
-    """需由原使用者確認後才能執行的自然語言動作。"""
-
-    __tablename__ = "pending_actions"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    guild_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    channel_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    user_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    action_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    parsed_parameters: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
-    )
-    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
 class ReminderRecord(Base):
     """可在重啟後恢復並以私訊派送的使用者提醒。"""
 
@@ -192,6 +173,11 @@ class ReminderRecord(Base):
     user_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     timezone_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    recurrence_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="once")
+    recurrence_time: Mapped[str | None] = mapped_column(String(5))
+    recurrence_weekdays: Mapped[str | None] = mapped_column(String(13))
+    interval_days: Mapped[int | None] = mapped_column(Integer)
+    recurrence_start_date: Mapped[str | None] = mapped_column(String(10))
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

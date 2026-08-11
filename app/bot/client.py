@@ -551,7 +551,7 @@ class DiscordAssistantClient(discord.Client):
         elif outcome.status == "ambiguous_delete":
             content = (
                 "可以喵，不過 Salt 還不知道你指的是哪一筆\n"
-                "請先用 /memory view 查看編號，再使用 /memory delete"
+                "請先用 /memory menu 查看編號，再透過選單刪除"
             )
         elif outcome.status == "unsupported_memory_subject":
             content = (
@@ -559,7 +559,7 @@ class DiscordAssistantClient(discord.Client):
                 "所以這次沒有存進記憶"
             )
         else:
-            content = "這段記憶太長或格式不完整，請改用 /memory set"
+            content = "這段記憶太長或格式不完整，請改用 /memory menu"
         try:
             await message.reply(
                 content,

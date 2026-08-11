@@ -96,8 +96,8 @@
 回覆固定記憶編號並停止該訊息的聊天 AI 流程，因此保存與確認都不產生 OpenAI 費用。普通
 「我今天……」訊息不會自動成為永久記憶。
 
-`/memory view`、`set`、`delete` 全部從 Interaction 取得目前 user ID，不提供目標使用者欄位，
-回覆固定為 ephemeral 並停用 mentions。記憶內容先經本機敏感掃描，單筆上限 200 字。
+`/memory menu` 從 Interaction 取得目前 user ID，不提供目標使用者欄位；回覆固定為
+ephemeral 並停用 mentions。記憶內容先經本機敏感掃描，單筆上限 200 字。
 
 Context Builder 只載入觸發訊息作者在相同 guild 的記憶，最多 20 筆並受獨立字元上限控制。
 記憶以普通 user role 背景區塊加入，明確標示不是系統指令或已驗證事實；安全、人設、權限與

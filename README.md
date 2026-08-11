@@ -260,23 +260,14 @@ ID、背景工作與摘要／向量唯一鍵都具有冪等保護，中斷後可
 
 使用者也可以使用只對自己可見的 Slash Commands：
 
-- `/memory view`：查看 Salt 在目前伺服器對自己的記憶與編號。
-- `/memory set content:內容`：新增自己的記憶。
-- `/memory set content:新內容 memory_id:編號`：修改自己的指定記憶。
-- `/memory delete memory_id:編號`：刪除自己的指定記憶。
+- `/memory menu`：以私密選單查看、新增、修改或刪除自己的記憶。
 
 命令不接受目標使用者參數，因此不能查看、修改或刪除別人的記憶。每筆最多 200 字，可能含
 API key、Token、密碼或私鑰的內容會被拒絕。聊天時最多加入
 `AI_PERSONAL_MEMORY_CONTEXT_CHARACTERS` 個字元的目前發言者記憶；這些資料只供個人化，不具
 系統指令權限，也不當成已證實的客觀事實。啟動機器人時會把命令同步到白名單伺服器。
 
-擁有者及 `DISCORD_ADMIN_USER_IDS` 指定管理員另可使用：
-
-- `/memory admin-view user:成員`：私密查看指定成員在目前伺服器的記憶。
-- `/memory admin-set user:成員 memory_id:編號 content:內容`：修改該成員已存在的指定記憶。
-
-管理員不能替他人新增或刪除記憶。成功查閱及修改會保存 actor、target 與記憶 ID 稽核資料，
-不在稽核表重複保存記憶內容。
+個人記憶僅能由建立者透過選單管理。
 
 ## 階段 7 提醒與管理功能
 
@@ -285,9 +276,10 @@ API key、Token、密碼或私鑰的內容會被拒絕。聊天時最多加入
 
 - `/timezone view`：查看自己的提醒時區。
 - `/timezone set timezone:Asia/Taipei`：設定自己在目前伺服器的時區。
-- `/remind create date:2026-08-05 time:14:30 content:內容`：建立持久化提醒。
+- `/remind create`：開啟私密選單，選擇一次、每天、每週或固定間隔提醒，再以表單填寫資料。
+- `/remind manage`：選擇最多 25 個待處理提醒，可批量更新內容或取消。
 - `/remind list`：列出自己的待處理提醒。
-- `/remind cancel reminder_id:編號`：取消自己的待處理提醒。
+- `/remind cancel reminder_id:編號`：取消自己的單一提醒。
 - `/bot status`：只有擁有者及指定管理員可查看健康、總用量、背景用量、背景工作、提醒及
   70%／90% 預算通知狀態。
 
@@ -314,14 +306,8 @@ FROM budget_threshold_notifications ORDER BY threshold_percent;
 
 擁有者及 `DISCORD_ADMIN_USER_IDS` 指定管理員可在白名單伺服器使用以下私密指令：
 
-- `/admin allowlist list|add|remove`：查看或即時修改可接收訊息的文字頻道。首次啟動時才會把
+- `/admin menu`：以私密選單管理白名單頻道，以及查看、建立、刪除記憶群組、加入或移出群組頻道。首次啟動時才會把
   `.env` 的頻道清單移入資料庫；此後管理員移除的頻道不會在重啟後自動恢復。
-- `/admin memory-group list|create|edit|delete` 與
-  `/admin memory-group add-channel|remove-channel`：將已允許的頻道組成一個歷史記憶範圍。
-  未分組頻道只查詢自己的歷史；同組頻道才可互相查詢摘要。
-- `/admin allowlist sync`：只提供受控歷史同步的提示與稽核。歷史同步需先以
-  `app.history_cli analyze` 免費估價，再使用明確確認字串與成本上限執行
-  `import-history`；因此這個 Slash Command 不會意外讀取大量歷史或產生 OpenAI 費用。
 
 所有管理操作都採 ephemeral 回覆並留下不含訊息內容的稽核紀錄。移除白名單或刪除分組不會刪除
 既有 Discord 訊息、SQLite 原始資料、摘要或向量。
