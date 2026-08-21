@@ -580,7 +580,7 @@ class DiscordAssistantClient(discord.Client):
     ) -> None:
         """依 channel ID 模式選擇立即回覆或陪伴觀察。"""
 
-        mode = self._mode_resolver.resolve(incoming.channel_id)
+        mode = await self._resolve_channel_mode(incoming)
         if mode is None or self.user is None:
             return
         explicit_signals = ReplySignals(
@@ -633,6 +633,16 @@ class DiscordAssistantClient(discord.Client):
                 lambda: self._evaluate_companion_reply_safely(message, incoming),
             )
 
+    async def _resolve_channel_mode(self, incoming: IncomingMessage) -> ChannelMode | None:
+        if self._channel_access_repository is not None and incoming.guild_id is not None:
+            persisted_mode = await self._channel_access_repository.get_channel_mode(
+                guild_id=str(incoming.guild_id),
+                channel_id=str(incoming.channel_id),
+            )
+            if persisted_mode is not None:
+                return ChannelMode(persisted_mode)
+        return self._mode_resolver.resolve(incoming.channel_id)
+
     async def _evaluate_companion_reply_safely(
         self,
         message: discord.Message,
@@ -657,6 +667,8 @@ class DiscordAssistantClient(discord.Client):
         """頻道安靜滿觀察窗後，以免費訊號決定是否加入對話。"""
 
         if self.user is None:
+            return
+        if await self._resolve_channel_mode(incoming) is not ChannelMode.COMPANION:
             return
         now = datetime.now(UTC)
         longest_window = timedelta(minutes=self._settings.companion_recent_bot_minutes)

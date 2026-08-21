@@ -21,6 +21,10 @@ class MemoryGroupError(ValueError):
     """分組名稱、範圍或成員資格不符合規則。"""
 
 
+class ChannelModeError(ValueError):
+    """頻道模式不符合白名單或可用模式規則。"""
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryGroup:
     id: int
@@ -33,11 +37,17 @@ class MemoryGroup:
 class ChannelAccessRepository:
     """集中處理可接收頻道與記憶搜尋範圍。"""
 
+    _CHANNEL_MODES = frozenset({"normal", "companion"})
+
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
     async def seed_allowlist(
-        self, *, guild_ids: frozenset[int], channel_ids: frozenset[int]
+        self,
+        *,
+        guild_ids: frozenset[int],
+        channel_ids: frozenset[int],
+        companion_channel_ids: frozenset[int] = frozenset(),
     ) -> None:
         """只在首次啟用時將既有 .env 頻道移入資料庫。
 
@@ -55,6 +65,7 @@ class ChannelAccessRepository:
                         .values(
                             guild_id=str(guild_id),
                             channel_id=str(channel_id),
+                            mode=("companion" if channel_id in companion_channel_ids else "normal"),
                             created_at=now,
                             updated_at=now,
                         )
@@ -89,9 +100,42 @@ class ChannelAccessRepository:
         async with self._session_factory() as session, session.begin():
             result = await session.execute(
                 sqlite_insert(ChannelAllowlistRecord)
-                .values(guild_id=guild_id, channel_id=channel_id, created_at=now, updated_at=now)
+                .values(
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    mode="normal",
+                    created_at=now,
+                    updated_at=now,
+                )
                 .on_conflict_do_nothing(index_elements=["guild_id", "channel_id"])
             )
+        return result.rowcount == 1
+
+    async def get_channel_mode(self, *, guild_id: str, channel_id: str) -> str | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(ChannelAllowlistRecord.mode)
+                .where(
+                    ChannelAllowlistRecord.guild_id == guild_id,
+                    ChannelAllowlistRecord.channel_id == channel_id,
+                )
+                .limit(1)
+            )
+
+    async def set_channel_mode(self, *, guild_id: str, channel_id: str, mode: str) -> bool:
+        if mode not in self._CHANNEL_MODES:
+            raise ChannelModeError("頻道模式只能是 normal 或 companion")
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(
+                update(ChannelAllowlistRecord)
+                .where(
+                    ChannelAllowlistRecord.guild_id == guild_id,
+                    ChannelAllowlistRecord.channel_id == channel_id,
+                )
+                .values(mode=mode, updated_at=datetime.now(UTC))
+            )
+        if result.rowcount == 0:
+            raise ChannelModeError("頻道尚未列入白名單，不能設定模式")
         return result.rowcount == 1
 
     async def remove_allowed(self, *, guild_id: str, channel_id: str) -> bool:

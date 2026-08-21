@@ -71,6 +71,7 @@ async def run_discord(settings: Settings) -> int:
     await channel_access_repository.seed_allowlist(
         guild_ids=settings.allowed_guild_ids,
         channel_ids=settings.allowed_channel_ids,
+        companion_channel_ids=settings.companion_channel_ids,
     )
     personal_memory_repository = PersonalMemoryRepository(database.session_factory)
     reminder_repository = ReminderRepository(database.session_factory)

@@ -24,6 +24,7 @@ def test_admin_slash_group_exposes_only_the_menu(database: Database) -> None:
         "allowlist-list",
         "allowlist-add",
         "allowlist-remove",
+        "channel-mode",
         "group-list",
         "group-create",
         "group-add-channel",
@@ -90,6 +91,20 @@ async def test_allowlist_is_persistent_and_removal_keeps_group_memory_configurat
 
 
 @pytest.mark.asyncio
+async def test_allowlisted_channel_mode_can_be_changed_persistently(database: Database) -> None:
+    repository = ChannelAccessRepository(database.session_factory)
+    await repository.add_allowed(guild_id="1", channel_id="10")
+
+    assert await repository.get_channel_mode(guild_id="1", channel_id="10") == "normal"
+    assert await repository.set_channel_mode(
+        guild_id="1",
+        channel_id="10",
+        mode="companion",
+    )
+    assert await repository.get_channel_mode(guild_id="1", channel_id="10") == "companion"
+
+
+@pytest.mark.asyncio
 async def test_seed_only_migrates_env_channels_when_persistent_allowlist_is_empty(
     database: Database,
 ) -> None:
@@ -101,6 +116,19 @@ async def test_seed_only_migrates_env_channels_when_persistent_allowlist_is_empt
     await repository.add_allowed(guild_id="1", channel_id="11")
     await repository.seed_allowlist(guild_ids=frozenset({1}), channel_ids=frozenset({10}))
     assert await repository.list_allowed(guild_id="1") == ("11",)
+
+
+@pytest.mark.asyncio
+async def test_initial_companion_configuration_is_saved_with_allowlist(database: Database) -> None:
+    repository = ChannelAccessRepository(database.session_factory)
+
+    await repository.seed_allowlist(
+        guild_ids=frozenset({1}),
+        channel_ids=frozenset({10}),
+        companion_channel_ids=frozenset({10}),
+    )
+
+    assert await repository.get_channel_mode(guild_id="1", channel_id="10") == "companion"
 
 
 @pytest.mark.asyncio

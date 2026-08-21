@@ -306,7 +306,7 @@ FROM budget_threshold_notifications ORDER BY threshold_percent;
 
 擁有者及 `DISCORD_ADMIN_USER_IDS` 指定管理員可在白名單伺服器使用以下私密指令：
 
-- `/admin menu`：以私密選單管理白名單頻道，以及查看、建立、刪除記憶群組、加入或移出群組頻道。首次啟動時才會把
+- `/admin menu`：以私密選單管理白名單頻道、切換一般／陪伴模式，以及查看、建立、刪除記憶群組、加入或移出群組頻道。首次啟動時才會把
   `.env` 的頻道清單移入資料庫；此後管理員移除的頻道不會在重啟後自動恢復。
 
 所有管理操作都採 ephemeral 回覆並留下不含訊息內容的稽核紀錄。移除白名單或刪除分組不會刪除

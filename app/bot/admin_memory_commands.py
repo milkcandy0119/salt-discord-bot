@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 
 from app.storage.admin_audit import AdminAuditRepository
-from app.storage.memory_groups import ChannelAccessRepository, MemoryGroupError
+from app.storage.memory_groups import ChannelAccessRepository, ChannelModeError, MemoryGroupError
 
 
 class AdminMemoryCommandGroup(app_commands.Group):
@@ -314,6 +314,7 @@ class _AdminActionSelect(discord.ui.Select[_AdminMenuView]):
                 discord.SelectOption(label="查看白名單頻道", value="allowlist-list"),
                 discord.SelectOption(label="新增白名單頻道", value="allowlist-add"),
                 discord.SelectOption(label="移除白名單頻道", value="allowlist-remove"),
+                discord.SelectOption(label="切換頻道模式", value="channel-mode"),
                 discord.SelectOption(label="查看記憶群組", value="group-list"),
                 discord.SelectOption(label="建立記憶群組", value="group-create"),
                 discord.SelectOption(label="加入頻道到記憶群組", value="group-add-channel"),
@@ -359,6 +360,21 @@ class _AdminActionSelect(discord.ui.Select[_AdminMenuView]):
                 await interaction.response.edit_message(
                     content="選擇要移除的頻道：",
                     view=_AllowlistRemoveView(
+                        parent=view.parent,
+                        guild_id=view.guild_id,
+                        user_id=view.user_id,
+                        channels=channels[:25],
+                    ),
+                )
+                return
+            if action == "channel-mode":
+                channels = await view.parent._repository.list_allowed(guild_id=view.guild_id)
+                if not channels:
+                    await interaction.response.edit_message(content="目前沒有白名單頻道", view=None)
+                    return
+                await interaction.response.edit_message(
+                    content="選擇要切換模式的頻道：",
+                    view=_ChannelModePickView(
                         parent=view.parent,
                         guild_id=view.guild_id,
                         user_id=view.user_id,
@@ -524,6 +540,112 @@ class _AllowedChannelPickSelect(discord.ui.Select[_AllowlistRemoveView]):
             content="已移出白名單" if removed else "該頻道不在白名單中",
             view=None,
         )
+
+
+class _ChannelModePickView(_AdminMenuView):
+    def __init__(
+        self,
+        *,
+        parent: AdminMemoryCommandGroup,
+        guild_id: str,
+        user_id: str,
+        channels: tuple[str, ...],
+    ) -> None:
+        discord.ui.View.__init__(self, timeout=600)
+        self.parent = parent
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.add_item(
+            _ChannelModePickSelect(
+                options=tuple(
+                    discord.SelectOption(label=f"#{channel_id}", value=channel_id)
+                    for channel_id in channels
+                )
+            )
+        )
+
+
+class _ChannelModePickSelect(discord.ui.Select[_ChannelModePickView]):
+    def __init__(self, *, options: tuple[discord.SelectOption, ...]) -> None:
+        super().__init__(placeholder="選擇頻道…", options=options)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, _ChannelModePickView):
+            await _admin_component_respond(interaction, "管理選單已失效，請重新開啟")
+            return
+        await interaction.response.edit_message(
+            content=f"選擇 #{self.values[0]} 的模式：",
+            view=_ChannelModeSelectView(
+                parent=view.parent,
+                guild_id=view.guild_id,
+                user_id=view.user_id,
+                channel_id=self.values[0],
+            ),
+        )
+
+
+class _ChannelModeSelectView(_AdminMenuView):
+    def __init__(
+        self,
+        *,
+        parent: AdminMemoryCommandGroup,
+        guild_id: str,
+        user_id: str,
+        channel_id: str,
+    ) -> None:
+        discord.ui.View.__init__(self, timeout=600)
+        self.parent = parent
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.channel_id = channel_id
+        self.add_item(_ChannelModeSelect())
+
+
+class _ChannelModeSelect(discord.ui.Select[_ChannelModeSelectView]):
+    def __init__(self) -> None:
+        super().__init__(
+            placeholder="選擇模式…",
+            options=(
+                discord.SelectOption(
+                    label="一般模式",
+                    value="normal",
+                    description="僅在提及、回覆或 !ai 時回應",
+                ),
+                discord.SelectOption(
+                    label="陪伴模式",
+                    value="companion",
+                    description="依保守規則可主動加入對話",
+                ),
+            ),
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, _ChannelModeSelectView):
+            await _admin_component_respond(interaction, "管理選單已失效，請重新開啟")
+            return
+        mode = self.values[0]
+        try:
+            await view.parent._repository.set_channel_mode(
+                guild_id=view.guild_id,
+                channel_id=view.channel_id,
+                mode=mode,
+            )
+            await view.parent._audit_repository.record(
+                guild_id=view.guild_id,
+                actor_user_id=view.user_id,
+                action="channel_mode_update",
+                target_record_id=view.channel_id,
+            )
+        except ChannelModeError as error:
+            await _admin_component_respond(interaction, str(error))
+            return
+        except Exception:
+            await _admin_component_respond(interaction, "切換頻道模式失敗，請稍後再試")
+            return
+        label = "一般模式" if mode == "normal" else "陪伴模式"
+        await interaction.response.edit_message(content=f"已切換為{label}", view=None)
 
 
 class _MemoryGroupModal(discord.ui.Modal, title="建立記憶群組"):

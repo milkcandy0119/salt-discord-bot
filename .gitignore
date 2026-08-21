@@ -14,3 +14,4 @@ runtime/
 backups/
 restore/
 secrets/
+personas/salt-zh-tw-v1.toml
