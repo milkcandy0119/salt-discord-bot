@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.ai.budget_manager import (
-    BudgetExceededError,
     BudgetManager,
     ModelPrice,
     PaidPurpose,
@@ -48,7 +47,7 @@ async def test_trial_start_snapshots_budget_and_cannot_be_reset(database: Databa
 
 
 @pytest.mark.asyncio
-async def test_trial_global_increment_limit_is_enforced_during_reservation(
+async def test_trial_global_increment_does_not_block_reservations(
     database: Database,
 ) -> None:
     repository = TrialRepository(database.session_factory)
@@ -67,19 +66,18 @@ async def test_trial_global_increment_limit_is_enforced_during_reservation(
         maximum_input_tokens=1_000_000,
         maximum_output_tokens=0,
     )
-    with pytest.raises(BudgetExceededError) as error:
-        await manager.reserve(
-            purpose=PaidPurpose.FOREGROUND_CHAT,
-            price=price,
-            maximum_input_tokens=1_000_000,
-            maximum_output_tokens=0,
-        )
+    await manager.reserve(
+        purpose=PaidPurpose.FOREGROUND_CHAT,
+        price=price,
+        maximum_input_tokens=1_000_000,
+        maximum_output_tokens=0,
+    )
 
-    assert error.value.limit_name == "trial_global"
+    assert (await manager.get_snapshot()).global_reserved_microusd == 1_200_000
 
 
 @pytest.mark.asyncio
-async def test_trial_background_increment_limit_is_independent(database: Database) -> None:
+async def test_trial_background_increment_does_not_block_reservations(database: Database) -> None:
     repository = TrialRepository(database.session_factory)
     manager = BudgetManager(database.session_factory)
     await _start(repository)
@@ -90,44 +88,40 @@ async def test_trial_background_increment_limit_is_independent(database: Databas
         output_microusd_per_million_tokens=0,
     )
 
-    with pytest.raises(BudgetExceededError) as error:
-        await manager.reserve(
-            purpose=PaidPurpose.SUMMARY,
-            price=price,
-            maximum_input_tokens=1_000_000,
-            maximum_output_tokens=0,
-        )
+    await manager.reserve(
+        purpose=PaidPurpose.SUMMARY,
+        price=price,
+        maximum_input_tokens=1_000_000,
+        maximum_output_tokens=0,
+    )
 
-    assert error.value.limit_name == "trial_background"
+    assert (await manager.get_snapshot()).background_reserved_microusd == 300_000
 
 
 @pytest.mark.asyncio
-async def test_pause_finish_and_expiry_block_new_paid_calls(database: Database) -> None:
+async def test_trial_status_does_not_block_recorded_ai_calls(database: Database) -> None:
     repository = TrialRepository(database.session_factory)
     manager = BudgetManager(database.session_factory)
     await _start(repository)
     price = ModelPrice("test", "test", 1, 0)
 
     await repository.set_status("pause", now=NOW + timedelta(hours=1))
-    with pytest.raises(BudgetExceededError) as paused:
-        await manager.reserve(
-            purpose=PaidPurpose.FOREGROUND_CHAT,
-            price=price,
-            maximum_input_tokens=1_000_000,
-            maximum_output_tokens=0,
-        )
-    assert paused.value.limit_name == "trial_inactive"
+    await manager.reserve(
+        purpose=PaidPurpose.FOREGROUND_CHAT,
+        price=price,
+        maximum_input_tokens=1_000_000,
+        maximum_output_tokens=0,
+    )
 
     await repository.set_status("resume", now=NOW + timedelta(hours=2))
     await repository.set_status("finish", now=NOW + timedelta(hours=3))
-    with pytest.raises(BudgetExceededError) as finished:
-        await manager.reserve(
-            purpose=PaidPurpose.FOREGROUND_CHAT,
-            price=price,
-            maximum_input_tokens=1_000_000,
-            maximum_output_tokens=0,
-        )
-    assert finished.value.limit_name == "trial_inactive"
+    await manager.reserve(
+        purpose=PaidPurpose.FOREGROUND_CHAT,
+        price=price,
+        maximum_input_tokens=1_000_000,
+        maximum_output_tokens=0,
+    )
+    assert (await manager.get_snapshot()).global_reserved_microusd == 2
 
 
 @pytest.mark.asyncio

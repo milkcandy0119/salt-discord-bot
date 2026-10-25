@@ -242,7 +242,7 @@ async def test_sensitive_model_output_is_not_returned_to_discord(database: Datab
 
 
 @pytest.mark.asyncio
-async def test_exhausted_budget_returns_fixed_maintenance_message(database: Database) -> None:
+async def test_existing_recorded_spend_does_not_block_a_reply(database: Database) -> None:
     manager = BudgetManager(database.session_factory)
     expensive_price = ModelPrice(
         model_name="fake",
@@ -257,10 +257,12 @@ async def test_exhausted_budget_returns_fixed_maintenance_message(database: Data
         maximum_output_tokens=0,
     )
 
-    outcome = await make_service(database, FakeProvider()).generate(make_context())
+    provider = FakeProvider()
+    outcome = await make_service(database, provider).generate(make_context())
 
-    assert outcome.status == "budget_exhausted"
-    assert outcome.content == "目前 AI 回覆暫時無法使用，請稍後再試。"
+    assert outcome.status == "generated"
+    assert outcome.content == "這是測試回覆。"
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.asyncio

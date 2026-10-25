@@ -78,21 +78,21 @@ Discord 訊息 ID 可在開發者模式下對訊息按右鍵選擇「複製訊�
 docker compose exec bot python -m app.trial_cli pause
 ```
 
-暫停會阻擋新的付費預留，但 Bot 仍保存白名單訊息並提供免費功能。確認安全後恢復：
+暫停會停止試跑流程的管理狀態，但 AI 呼叫仍持續只做用量記帳。確認安全後恢復：
 
 ```powershell
 docker compose exec bot python -m app.trial_cli resume --confirmation "確認恢復階段 9 試跑"
 ```
 
-七天期滿或要提前結束，且希望停止新的付費 AI 呼叫：
+七天期滿或要提前結束試跑：
 
 ```powershell
 docker compose exec bot python -m app.trial_cli finish --confirmation "確認結束階段 9 試跑"
 docker compose exec bot python -m app.trial_cli report
 ```
 
-結束後不得恢復或重設基準，新付費預留維持停止。若未來要進行第二輪付費試跑，必須先設計
-新的階段與明確額度，不能直接清除資料表。
+結束後不得恢復或重設基準；新 AI 呼叫仍持續記帳。若未來要進行第二輪試跑，必須先設計
+新的階段，不能直接清除資料表。
 
 ## 進入正式運行
 
@@ -105,8 +105,7 @@ docker compose exec bot python -m app.trial_cli go-live --confirmation "確認�
 `active`、`paused` 或已手動 `completed` 的試跑都可進入正式運行。成功後：
 
 - 狀態顯示為 `production`，試跑的實際結束時間與費用增量會固定保存。
-- 新的付費呼叫不再受試跑 US$1／US$0.25 增量限制。
-- 永久全域 US$10 與永久背景 US$3 上限仍然有效。
+- 新的付費呼叫只保留用量記帳，不受試跑 US$1／US$0.25 增量或任何全域／背景金額上限限制。
 - companion 不再受試跑每日 20 則上限限制，但原有免費判斷、冷卻及頻道規則仍有效。
 - 不會開始第二輪試跑，也不會刪除試跑報告、訊息或個人記憶。
 

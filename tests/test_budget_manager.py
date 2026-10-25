@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 import pytest
 
 from app.ai.budget_manager import (
-    BudgetExceededError,
     BudgetManager,
     BudgetSnapshot,
     ModelPrice,
@@ -73,7 +72,7 @@ def test_price_quote_uses_exact_integer_microusd_with_ceiling() -> None:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_reservations_never_exceed_global_ten_dollars(
+async def test_concurrent_reservations_are_not_limited_by_global_spend(
     database: Database,
 ) -> None:
     manager = make_manager(database)
@@ -83,17 +82,15 @@ async def test_concurrent_reservations_never_exceed_global_ten_dollars(
         return_exceptions=True,
     )
     reservations = [result for result in results if isinstance(result, Reservation)]
-    rejected = [result for result in results if isinstance(result, BudgetExceededError)]
     snapshot = await manager.get_snapshot()
 
-    assert len(reservations) == 10
-    assert len(rejected) == 2
-    assert snapshot.global_reserved_microusd == 10_000_000
+    assert len(reservations) == 12
+    assert snapshot.global_reserved_microusd == 12_000_000
     assert snapshot.global_spent_microusd == 0
 
 
 @pytest.mark.asyncio
-async def test_background_reservations_cannot_exceed_three_dollars(
+async def test_background_reservations_are_not_limited_by_background_spend(
     database: Database,
 ) -> None:
     manager = make_manager(database)
@@ -106,14 +103,11 @@ async def test_background_reservations_cannot_exceed_three_dollars(
         return_exceptions=True,
     )
     reservations = [result for result in results if isinstance(result, Reservation)]
-    rejected = [result for result in results if isinstance(result, BudgetExceededError)]
     snapshot = await manager.get_snapshot()
 
-    assert len(reservations) == 3
-    assert len(rejected) == 1
-    assert rejected[0].limit_name == "background"
-    assert snapshot.background_reserved_microusd == 3_000_000
-    assert snapshot.global_reserved_microusd == 3_000_000
+    assert len(reservations) == 4
+    assert snapshot.background_reserved_microusd == 4_000_000
+    assert snapshot.global_reserved_microusd == 4_000_000
 
 
 @pytest.mark.asyncio
@@ -137,15 +131,15 @@ async def test_background_settlement_updates_both_ledgers(
 
 
 @pytest.mark.asyncio
-async def test_foreground_chat_can_use_the_entire_global_budget(
+async def test_foreground_chat_can_reserve_more_than_the_legacy_global_budget(
     database: Database,
 ) -> None:
     manager = make_manager(database)
 
-    await reserve_dollars(manager, 10)
+    await reserve_dollars(manager, 11)
     snapshot = await manager.get_snapshot()
 
-    assert snapshot.global_reserved_microusd == 10_000_000
+    assert snapshot.global_reserved_microusd == 11_000_000
     assert snapshot.background_reserved_microusd == 0
 
 
@@ -195,7 +189,7 @@ async def test_releasing_known_unbilled_failure_returns_reserved_budget(
 
 
 @pytest.mark.asyncio
-async def test_unknown_usage_keeps_reservation_and_never_assumes_zero_cost(
+async def test_unknown_usage_keeps_reservation_without_blocking_later_calls(
     database: Database,
 ) -> None:
     manager = make_manager(database)
@@ -211,8 +205,8 @@ async def test_unknown_usage_keeps_reservation_and_never_assumes_zero_cost(
     assert changed is True
     assert snapshot.global_reserved_microusd == 10_000_000
     assert call is not None and call.status == "usage_uncertain"
-    with pytest.raises(BudgetExceededError):
-        await reserve_dollars(manager, 1)
+    await reserve_dollars(manager, 1)
+    assert (await manager.get_snapshot()).global_reserved_microusd == 11_000_000
 
 
 @pytest.mark.asyncio

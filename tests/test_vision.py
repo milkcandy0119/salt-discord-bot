@@ -700,7 +700,7 @@ async def test_disabled_vision_performs_no_download() -> None:
 
 
 @pytest.mark.asyncio
-async def test_budget_exhaustion_prevents_download_and_provider_call(database: Database) -> None:
+async def test_recorded_spend_does_not_prevent_vision_or_provider_call(database: Database) -> None:
     budget = BudgetManager(database.session_factory)
     await budget.reserve(
         purpose=PaidPurpose.FOREGROUND_CHAT,
@@ -718,9 +718,9 @@ async def test_budget_exhaustion_prevents_download_and_provider_call(database: D
         trigger_has_text=False,
     )
 
-    assert outcome.status == "budget_exhausted"
-    assert downloader.calls == []
-    assert provider.calls == []
+    assert outcome.status == "generated"
+    assert len(downloader.calls) == 1
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -849,7 +849,7 @@ async def test_animation_reserves_four_frame_tokens_before_download() -> None:
 
 
 @pytest.mark.asyncio
-async def test_animation_budget_exhaustion_happens_before_download(
+async def test_recorded_spend_does_not_block_animation_download(
     database: Database,
 ) -> None:
     budget = BudgetManager(database.session_factory)
@@ -878,9 +878,9 @@ async def test_animation_budget_exhaustion_happens_before_download(
         trigger_has_text=False,
     )
 
-    assert outcome.status == "budget_exhausted"
-    assert downloader.calls == []
-    assert provider.calls == []
+    assert outcome.status == "generated"
+    assert len(downloader.calls) == 1
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.asyncio
