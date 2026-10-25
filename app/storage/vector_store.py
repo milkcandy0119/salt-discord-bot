@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.storage.models import (
     ConversationSegmentRecord,
+    MessageRecord,
     SegmentSummaryRecord,
     SummaryEmbeddingRecord,
 )
@@ -21,13 +22,14 @@ from app.storage.models import (
 
 @dataclass(frozen=True, slots=True)
 class HistoricalSummary:
-    """可放入聊天上下文的同頻道歷史摘要。"""
+    """可放入聊天上下文的歷史摘要及可核對的原始發言。"""
 
     summary_id: int
     segment_id: int
     content: str
     score: float
     channel_id: str = ""
+    evidence: str = ""
 
 
 class SQLiteVectorStore:
@@ -157,9 +159,67 @@ class SQLiteVectorStore:
                     content=content,
                     score=score,
                 )
-        return tuple(
+        matches = tuple(
             sorted(best_by_segment.values(), key=lambda item: item.score, reverse=True)[:limit]
         )
+        if not matches:
+            return ()
+
+        # 摘要只負責找出相關段落；帶回非敏感原始發言，避免摘要改寫時
+        # 遺失作者與原話的對應。Discord user ID 僅在本機用來區分作者。
+        segment_ids = tuple(item.segment_id for item in matches)
+        async with self._session_factory() as session:
+            source_rows = (
+                await session.execute(
+                    select(
+                        MessageRecord.segment_id,
+                        MessageRecord.author_id,
+                        MessageRecord.author_display_name,
+                        MessageRecord.content,
+                        MessageRecord.is_bot,
+                    )
+                    .where(
+                        MessageRecord.segment_id.in_(segment_ids),
+                        MessageRecord.is_sensitive.is_(False),
+                    )
+                    .order_by(
+                        MessageRecord.segment_id,
+                        MessageRecord.discord_created_at,
+                        MessageRecord.id,
+                    )
+                )
+            ).all()
+
+        source_by_segment: dict[int, list[tuple[str, str | None, str, bool]]] = {}
+        for segment_id, author_id, display_name, content, is_bot in source_rows:
+            source_by_segment.setdefault(segment_id, []).append(
+                (author_id, display_name, content, is_bot)
+            )
+
+        enriched: list[HistoricalSummary] = []
+        for match in matches:
+            speaker_labels: dict[str, str] = {}
+            rendered: list[str] = []
+            for author_id, display_name, content, is_bot in source_by_segment.get(
+                match.segment_id, []
+            ):
+                label = speaker_labels.setdefault(
+                    author_id, f"發言者{len(speaker_labels) + 1}"
+                )
+                name = (display_name or "未命名成員").strip()
+                author = "Salt" if is_bot else name
+                rendered.append(f"{author}（{label}）: {content.strip()}")
+            enriched.append(
+                HistoricalSummary(
+                    summary_id=match.summary_id,
+                    segment_id=match.segment_id,
+                    content=match.content,
+                    score=match.score,
+                    channel_id=match.channel_id,
+                    evidence="\n".join(rendered)[-2_400:],
+                )
+            )
+        return tuple(enriched)
 
     async def has_searchable_vectors(
         self,
